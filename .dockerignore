@@ -1,0 +1,15 @@
+**/__pycache__
+**/*.py[cod]
+**/*.so
+.git
+.gitignore
+.env
+.venv
+config.yaml
+.env.local
+build
+coverage
+htmlcov
+pytestcache
+*.egg-info
+*.log
