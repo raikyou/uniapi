@@ -98,6 +98,52 @@ class ProviderPool:
             await self._refresh_missing_model_lists()
             self._initialized = True
 
+    async def fetch_upstream_models(self, provider_name: str) -> list[str]:
+        """Fetch the live model list from the given provider's models endpoint.
+
+        This does not mutate the pool state; it simply queries the provider and
+        returns the parsed list of model identifiers. On error, an exception is
+        raised so callers can surface appropriate HTTP errors.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        state: Optional[ProviderState] = None
+        for s in self._states:
+            if s.config.name == provider_name:
+                state = s
+                break
+        if state is None:
+            raise ValueError(f"Provider not found: {provider_name}")
+
+        client = self._client
+        assert client is not None
+        endpoint = state.config.normalized_models_endpoint()
+        url = f"{state.config.normalized_base_url()}{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {state.config.api_key}",
+        }
+        logger.info("Fetching models on-demand for provider %s", state.config.name)
+        try:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to fetch models from {state.config.name}: {exc}")
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise RuntimeError(
+                f"Unexpected models payload from {state.config.name} at {endpoint}"
+            )
+
+        models: list[str] = []
+        for entry in data:
+            model_id = entry.get("id") if isinstance(entry, dict) else None
+            if isinstance(model_id, str) and model_id:
+                models.append(model_id)
+        return models
+
     async def shutdown(self) -> None:
         async with self._lock:
             if self._client is not None:

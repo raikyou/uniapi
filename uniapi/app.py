@@ -319,14 +319,17 @@ class ProxyEngine:
             logger.info("Applying updated configuration from %s", self._config_path)
         else:
             logger.info("Applying updated configuration")
+        # Replace in‑memory config and dependent structures
+        self._config = new_config
+        self._update_model_listing_paths(new_config.providers)
         await self._pool.shutdown()
         self._pool.rebuild_on_config_change(new_config)
+        # Reset HTTP client so new timeout/proxy take effect on next request
         async with self._client_lock:
             if self._client is not None:
                 await self._client.aclose()
                 self._client = None
-        self._config = new_config
-        self._update_model_listing_paths(new_config.providers)
+        # Warm up pool/client so the service stays responsive post‑reload
         await self._pool.initialize()
         await self.ensure_client()
 
@@ -593,10 +596,7 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.get("/admin/config")
     async def get_config(request: Request):
-        # Verify API key for admin access
-        provided_key = _extract_api_key(request.headers)
-        if not provided_key or provided_key != engine.config.api_key:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        _require_admin(request)
 
         # Read current config file
         if not config_path.exists():
@@ -612,10 +612,7 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.post("/admin/config")
     async def update_config(request: Request):
-        # Verify API key for admin access
-        provided_key = _extract_api_key(request.headers)
-        if not provided_key or provided_key != engine.config.api_key:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        _require_admin(request)
 
         try:
             new_config_data = await request.json()
@@ -671,9 +668,7 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.get("/admin/providers/status")
     async def provider_status(request: Request):
-        provided_key = _extract_api_key(request.headers)
-        if not provided_key or provided_key != engine.config.api_key:
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        _require_admin(request)
 
         try:
             snapshot = await engine.provider_status_snapshot()
@@ -683,6 +678,71 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
         return {"providers": snapshot}
 
+    @app.get("/admin/providers/{provider_name}/models")
+    async def provider_models(provider_name: str, request: Request):
+        _require_admin(request)
+
+        try:
+            models = await engine.pool.fetch_upstream_models(provider_name)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        except RuntimeError as exc:
+            logger.warning("Model fetch failed for %s: %s", provider_name, exc)
+            raise HTTPException(status_code=502, detail=str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected error fetching models for %s: %s", provider_name, exc)
+            raise HTTPException(status_code=500, detail="Failed to fetch models")
+
+        # Return simple list for admin UI selection
+        return {"models": models}
+
+    @app.post("/admin/providers/_probe_models")
+    async def probe_provider_models(request: Request):
+        # Allow fetching models for providers not yet saved (from modal form)
+        _require_admin(request)
+
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid payload")
+
+        base_url = str(payload.get("base_url") or "").strip()
+        api_key = str(payload.get("api_key") or "").strip()
+        models_endpoint = str(payload.get("models_endpoint") or "/v1/models").strip()
+        if not base_url or not api_key:
+            raise HTTPException(status_code=400, detail="base_url and api_key are required")
+
+        base_url = base_url.rstrip("/")
+        if not models_endpoint.startswith("/"):
+            models_endpoint = f"/{models_endpoint}"
+        url = f"{base_url}{models_endpoint}"
+
+        client = await engine.ensure_client()
+        headers = {"Authorization": f"Bearer {api_key}"}
+        try:
+            upstream = await client.get(url, headers=headers)
+            upstream.raise_for_status()
+            body = upstream.json()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch models: {exc}")
+
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, list):
+            raise HTTPException(status_code=502, detail="Unexpected models payload format")
+
+        models: list[str] = []
+        for entry in data:
+            if isinstance(entry, dict):
+                mid = entry.get("id")
+            else:
+                mid = None
+            if isinstance(mid, str) and mid:
+                models.append(mid)
+        return {"models": models}
+
     # ---------- Admin log endpoints ----------
     def _admin_key_ok(request: Request) -> bool:
         provided_key = _extract_api_key(request.headers)
@@ -690,10 +750,13 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
             provided_key = request.query_params.get("api_key")
         return bool(provided_key and provided_key == engine.config.api_key)
 
-    @app.get("/admin/logs/recent")
-    async def admin_logs_recent(request: Request):
+    def _require_admin(request: Request) -> None:
         if not _admin_key_ok(request):
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+    @app.get("/admin/logs/recent")
+    async def admin_logs_recent(request: Request):
+        _require_admin(request)
         try:
             limit = int(request.query_params.get("limit", 500))
         except ValueError:
@@ -704,8 +767,7 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.get("/admin/logs/stream")
     async def admin_logs_stream(request: Request):
-        if not _admin_key_ok(request):
-            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        _require_admin(request)
 
         async def event_iterator():
             queue = _admin_log_handler.subscribe()

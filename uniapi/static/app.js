@@ -4,6 +4,7 @@ let configData = null;
 let editingProviderIndex = -1;
 let providerStatusMap = {};
 let statusPollTimer = null;
+
 // 日志相关状态
 let logsConnected = false;
 let logsPaused = false;
@@ -13,100 +14,16 @@ let logsBufferWhilePaused = [];
 let sseBuffer = '';
 const textDecoder = new TextDecoder('utf-8');
 
+// Provider 模型状态
+let providerModelsState = {
+    models: [],
+    selected: new Set(),
+    filter: '',
+};
+
 const STATUS_POLL_INTERVAL = 10000;
 
-async function fetchConfigFromServer(options = {}) {
-    const { silent = false } = options;
-    try {
-        const response = await fetch('/admin/config', {
-            headers: {
-                'X-API-Key': apiKey
-            }
-        });
-
-        if (response.status === 401) {
-            if (!silent) {
-                showError('API Key 无效');
-            }
-            return { success: false, unauthorized: true };
-        }
-
-        if (!response.ok) {
-            throw new Error('加载配置失败');
-        }
-
-        const data = await response.json();
-        return { success: true, data };
-    } catch (error) {
-        if (!silent) {
-            showError(error.message || '加载配置失败');
-        }
-        return { success: false, error };
-    }
-}
-
-function getPreferenceNumber(value, fallback) {
-    return value === undefined || value === null ? fallback : value;
-}
-
-function parseNumberInput(value, fallback) {
-    const trimmed = value.trim();
-    if (trimmed === '') {
-        return fallback;
-    }
-    const parsed = Number(trimmed);
-    return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-async function copyTextToClipboard(text) {
-    if (!text) {
-        return false;
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        try {
-            await navigator.clipboard.writeText(text);
-            return true;
-        } catch (err) {
-            // fall back below
-        }
-    }
-
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', 'true');
-    textarea.style.position = 'absolute';
-    textarea.style.left = '-9999px';
-    document.body.appendChild(textarea);
-    textarea.select();
-    let succeeded = false;
-    try {
-        succeeded = document.execCommand('copy');
-    } catch (err) {
-        succeeded = false;
-    }
-    document.body.removeChild(textarea);
-    return succeeded;
-}
-
-async function copyProviderField(providerIndex, field) {
-    if (!configData || !Array.isArray(configData.providers)) {
-        showError('尚未加载配置，无法复制');
-        return;
-    }
-    const provider = configData.providers[providerIndex];
-    if (!provider || typeof provider[field] !== 'string') {
-        showError('未找到可复制的内容');
-        return;
-    }
-    const success = await copyTextToClipboard(provider[field]);
-    if (success) {
-        showSuccess('已复制到剪贴板');
-    } else {
-        showError('复制失败，请手动复制');
-    }
-}
-
-// 初始化
+// ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', function() {
     // 检查是否已登录
     const savedApiKey = sessionStorage.getItem('apiKey');
@@ -116,91 +33,20 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 绑定事件
-    const loginForm = document.getElementById('loginForm');
-    if (loginForm) {
-        loginForm.addEventListener('submit', handleLogin);
-    }
-    const logoutBtn = document.getElementById('logoutBtn');
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', handleLogout);
-    }
-    const addProviderBtn = document.getElementById('addProviderBtn');
-    if (addProviderBtn) {
-        addProviderBtn.addEventListener('click', () => openProviderModal());
-    }
-    const editPreferencesBtn = document.getElementById('editPreferencesBtn');
-    if (editPreferencesBtn) {
-        editPreferencesBtn.addEventListener('click', openPreferencesModal);
-    }
-    const providerFormEl = document.getElementById('providerForm');
-    if (providerFormEl) {
-        providerFormEl.addEventListener('submit', handleSaveProvider);
-    }
-    const preferencesFormEl = document.getElementById('preferencesForm');
-    if (preferencesFormEl) {
-        preferencesFormEl.addEventListener('submit', handleSavePreferences);
-    }
+    document.getElementById('loginForm')?.addEventListener('submit', handleLogin);
+    document.getElementById('logoutBtn')?.addEventListener('click', handleLogout);
+    document.getElementById('providerForm')?.addEventListener('submit', handleSaveProvider);
+    document.getElementById('preferencesForm')?.addEventListener('submit', handleSavePreferences);
+    document.getElementById('pauseLogsBtn')?.addEventListener('click', togglePauseLogs);
+    document.getElementById('clearLogsBtn')?.addEventListener('click', clearLogsView);
 
-    // 日志控制按钮
-    const pauseBtn = document.getElementById('pauseLogsBtn');
-    if (pauseBtn) {
-        pauseBtn.addEventListener('click', togglePauseLogs);
-    }
-    const clearBtn = document.getElementById('clearLogsBtn');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', clearLogsView);
-    }
-
-    document.addEventListener('click', async (event) => {
-        // 处理 base_url 和 api_key 的复制
-        const copyWrapper = event.target.closest('.copy-wrapper');
-        if (copyWrapper) {
-            const providerIndex = Number(copyWrapper.dataset.providerIndex);
-            const field = copyWrapper.dataset.field;
-            if (!Number.isNaN(providerIndex) && field) {
-                copyProviderField(providerIndex, field);
-            }
-            return;
-        }
-
-        // 处理 provider name 和 model tag 的复制
-        const copyElement = event.target.closest('[data-copy-text]');
-        if (copyElement) {
-            const text = copyElement.dataset.copyText;
-            if (text) {
-                const success = await copyTextToClipboard(text);
-                if (success) {
-                    showSuccess('已复制到剪贴板');
-                } else {
-                    showError('复制失败，请手动复制');
-                }
-            }
-            return;
-        }
-    });
+    // 全局点击事件委托
+    document.addEventListener('click', handleGlobalClick);
+    document.addEventListener('change', handleGlobalChange);
+    document.addEventListener('keydown', handleGlobalKeydown);
 });
 
-function switchTab(tab) {
-    const configTab = document.getElementById('configTab');
-    const logsTab = document.getElementById('logsTab');
-    const tabConfigBtn = document.getElementById('tabConfig');
-    const tabLogsBtn = document.getElementById('tabLogs');
-
-    if (tab === 'logs') {
-        configTab.classList.remove('active');
-        logsTab.classList.add('active');
-        tabConfigBtn.classList.remove('active');
-        tabLogsBtn.classList.add('active');
-        initLogsView();
-    } else {
-        logsTab.classList.remove('active');
-        configTab.classList.add('active');
-        tabLogsBtn.classList.remove('active');
-        tabConfigBtn.classList.add('active');
-    }
-}
-
-// 登录处理
+// ==================== 登录/登出 ====================
 async function handleLogin(e) {
     e.preventDefault();
     const key = document.getElementById('apiKey').value.trim();
@@ -211,7 +57,6 @@ async function handleLogin(e) {
     await login();
 }
 
-// 登录并加载配置
 async function login() {
     const result = await fetchConfigFromServer();
     if (!result.success) {
@@ -232,141 +77,222 @@ async function login() {
     renderPreferences();
     await loadProviderStatus({ silent: true });
     startStatusPolling();
-
-    // 如果当前在日志页，初始化日志
-    const logsTabVisible = document.getElementById('logsTab')?.classList.contains('active');
-    if (logsTabVisible) {
-        initLogsView();
-    }
 }
 
-// 登出
 function handleLogout() {
     apiKey = '';
     configData = null;
     providerStatusMap = {};
     stopStatusPolling();
     sessionStorage.removeItem('apiKey');
+
     document.getElementById('loginView').classList.remove('hidden');
     document.getElementById('mainView').classList.add('hidden');
     document.getElementById('apiKey').value = '';
 
-    // 停止日志连接
     stopLogStream();
     const out = document.getElementById('logOutput');
     if (out) out.textContent = '';
 }
 
-// 渲染 Providers 列表
+// ==================== 视图切换 ====================
+function switchView(viewName) {
+    // 隐藏所有视图
+    document.querySelectorAll('.view').forEach(view => {
+        view.classList.add('hidden');
+    });
+
+    // 显示目标视图
+    if (viewName === 'providers') {
+        document.getElementById('providersView').classList.remove('hidden');
+    } else if (viewName === 'logs') {
+        document.getElementById('logsView').classList.remove('hidden');
+        initLogsView();
+    }
+}
+
+// ==================== API 请求 ====================
+async function fetchConfigFromServer(options = {}) {
+    const { silent = false } = options;
+    try {
+        const response = await fetch('/admin/config', {
+            headers: { 'X-API-Key': apiKey }
+        });
+
+        if (response.status === 401) {
+            if (!silent) showError('API Key 无效');
+            return { success: false, unauthorized: true };
+        }
+
+        if (!response.ok) throw new Error('加载配置失败');
+
+        const data = await response.json();
+        return { success: true, data };
+    } catch (error) {
+        if (!silent) showError(error.message || '加载配置失败');
+        return { success: false, error };
+    }
+}
+
+async function saveConfig() {
+    try {
+        const orderedProviders = Array.isArray(configData?.providers)
+            ? configData.providers.map(formatProviderForSave)
+            : [];
+
+        const payload = {
+            ...configData,
+            providers: orderedProviders
+        };
+
+        const response = await fetch('/admin/config', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': apiKey
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.status === 401) {
+            showError('API Key 无效，请重新登录');
+            setTimeout(() => handleLogout(), 2000);
+            return false;
+        }
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || '保存配置失败');
+        }
+
+        showSuccess('配置已保存');
+
+        const refreshed = await fetchConfigFromServer({ silent: true });
+        if (refreshed.success && refreshed.data) {
+            configData = refreshed.data;
+        } else {
+            configData.providers = orderedProviders;
+        }
+
+        renderProviders();
+        renderPreferences();
+        await loadProviderStatus({ silent: true });
+        return true;
+    } catch (error) {
+        showError(error.message);
+        return false;
+    }
+}
+
+// ==================== Providers 渲染 ====================
 function renderProviders() {
-    const container = document.getElementById('providersList');
+    const container = document.getElementById('providersTable');
     if (!configData || !configData.providers || configData.providers.length === 0) {
-        container.innerHTML = '<div class="empty-state">暂无 Provider 配置</div>';
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">📦</div>
+                <div class="empty-text">暂无 Provider 配置</div>
+            </div>
+        `;
         return;
     }
 
-    // 按优先级降序排序，并记录原始索引
+    // 按优先级排序
     const providersWithIndex = configData.providers.map((provider, index) => ({
         provider,
         originalIndex: index
     }));
+
     providersWithIndex.sort((a, b) => {
         const priorityDiff = (b.provider.priority || 0) - (a.provider.priority || 0);
-        if (priorityDiff !== 0) {
-            return priorityDiff;
-        }
+        if (priorityDiff !== 0) return priorityDiff;
         const nameA = a.provider.provider || '';
         const nameB = b.provider.provider || '';
         return nameA.localeCompare(nameB);
     });
 
-    // 构建表格
     container.innerHTML = `
-        <table class="providers-table">
-            <thead>
-                <tr>
-                    <th style="width: 110px; padding-right: 12px;">Provider</th>
-                    <th style="width: 220px; padding-left: 12px;">Base URL</th>
-                    <th style="width: 140px;">API Key</th>
-                    <th style="width: 85px;">优先级</th>
-                    <th>Models</th>
-                    <th style="width: 140px;">状态</th>
-                    <th style="width: 160px;">操作</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${providersWithIndex.map(({provider, originalIndex}) => {
-                    const showModelsEndpoint = provider.models_endpoint && provider.models_endpoint !== '/v1/models';
-                    const manuallyEnabled = provider.enabled !== false;
-                    const statusInfo = determineProviderStatus(provider);
-                    const statusDetail = statusInfo.detail
-                        ? `<div class="status-detail" title="${escapeHtml(statusInfo.detail)}">${escapeHtml(statusInfo.detail)}</div>`
-                        : '';
-                    const statusTitle = statusInfo.detail ? statusInfo.detail : statusInfo.label;
-                    const statusTitleEscaped = escapeHtml(statusTitle);
-                    const statusLabelEscaped = escapeHtml(statusInfo.label);
-                    const toggleLabel = manuallyEnabled ? '禁用' : '启用';
-                    const toggleTitle = manuallyEnabled ? '手动禁用此 Provider' : '手动启用此 Provider';
-
-                    return `
+        <div class="table-container">
+            <table class="table">
+                <thead>
                     <tr>
-                        <td style="padding-right: 12px;">
-                            <span class="provider-name" data-copy-text="${escapeHtml(provider.provider)}" title="点击复制">${escapeHtml(provider.provider)}</span>
-                        </td>
-                        <td style="padding-left: 12px;">
-                            <div class="copy-wrapper" data-provider-index="${originalIndex}" data-field="base_url" title="点击复制">
-                                <span>${escapeHtml(provider.base_url)}</span>
-                            </div>
-                        </td>
-                        <td>
-                            <div class="copy-wrapper" data-provider-index="${originalIndex}" data-field="api_key" title="点击复制">
-                                <span>${maskApiKey(provider.api_key)}</span>
-                            </div>
-                        </td>
-                        <td>${provider.priority || 0}</td>
-                        <td style="max-width: 400px;">
-                            ${provider.model ? `
-                                <div class="model-list">
-                                    ${provider.model.map(m => `<span class="model-tag" data-copy-text="${escapeHtml(m)}" title="点击复制">${escapeHtml(m)}</span>`).join('')}
-                                </div>
-                            ` : '<span style="color: #a0aec0;">-</span>'}
-                            ${showModelsEndpoint ? `<div style="margin-top: 4px; font-size: 12px; color: #718096;">Endpoint: ${escapeHtml(provider.models_endpoint)}</div>` : ''}
-                        </td>
-                        <td>
-                            <div class="status-cell">
-                                <span class="status-pill ${statusInfo.className}" title="${statusTitleEscaped}">${statusLabelEscaped}</span>
-                                ${statusDetail}
-                            </div>
-                        </td>
-                        <td>
-                            <div class="provider-actions">
-                                <a class="action-link" onclick="toggleProviderEnabled(${originalIndex})" title="${toggleTitle}">${toggleLabel}</a>
-                                <a class="action-link edit" onclick="openProviderModal(${originalIndex})" title="编辑">编辑</a>
-                                <a class="action-link danger" onclick="deleteProvider(${originalIndex})" title="删除">删除</a>
-                            </div>
-                        </td>
+                        <th>Provider</th>
+                        <th>Base URL</th>
+                        <th>API Key</th>
+                        <th>优先级</th>
+                        <th>Models</th>
+                        <th>状态</th>
+                        <th>操作</th>
                     </tr>
-                    `;
-                }).join('')}
-            </tbody>
-        </table>
-    `;
-}
+                </thead>
+                <tbody>
+                    ${providersWithIndex.map(({provider, originalIndex}) => {
+                        const statusInfo = determineProviderStatus(provider);
+                        const manuallyEnabled = provider.enabled !== false;
+                        const toggleLabel = manuallyEnabled ? '禁用' : '启用';
 
-function isProviderEnabled(provider) {
-    return provider && provider.enabled !== false;
+                        return `
+                        <tr>
+                            <td>
+                                <span class="clickable" data-copy-text="${escapeHtml(provider.provider)}" title="点击复制">
+                                    ${escapeHtml(provider.provider)}
+                                </span>
+                            </td>
+                            <td>
+                                <span class="clickable text-muted" data-copy-text="${escapeHtml(provider.base_url)}" title="点击复制">
+                                    ${escapeHtml(provider.base_url)}
+                                </span>
+                            </td>
+                            <td>
+                                <span class="clickable text-muted" data-copy-text="${escapeHtml(provider.api_key)}" title="点击复制完整 API Key" style="cursor: pointer;">
+                                    ${maskApiKey(provider.api_key)}
+                                </span>
+                            </td>
+                            <td>
+                                <input type="number"
+                                    class="priority-input"
+                                    value="${provider.priority || 0}"
+                                    onchange="updateProviderPriority(${originalIndex}, this.value)"
+                                    title="修改优先级">
+                            </td>
+                            <td>
+                                ${provider.model ? `
+                                    <div style="display: flex; flex-wrap: wrap; gap: 8px; max-width: 450px;">
+                                        ${provider.model.map(m => `
+                                            <span class="tag" data-copy-text="${escapeHtml(m)}" title="点击复制">${escapeHtml(m)}</span>
+                                        `).join('')}
+                                    </div>
+                                ` : '<span class="text-muted">-</span>'}
+                            </td>
+                            <td>
+                                <span class="badge badge-${statusInfo.className}" title="${escapeHtml(statusInfo.detail || statusInfo.label)}">
+                                    ${escapeHtml(statusInfo.label)}
+                                </span>
+                                ${statusInfo.detail ? `<div class="text-muted" style="font-size: 12px; margin-top: 4px;">${escapeHtml(statusInfo.detail)}</div>` : ''}
+                            </td>
+                            <td>
+                                <div class="action-links">
+                                    <a class="action-link" onclick="openProviderModal(${originalIndex}, 'models')" title="获取模型">获取模型</a>
+                                    <a class="action-link" onclick="toggleProviderEnabled(${originalIndex})" title="${toggleLabel}">${toggleLabel}</a>
+                                    <a class="action-link" onclick="openProviderModal(${originalIndex})" title="编辑">编辑</a>
+                                    <a class="action-link danger" onclick="deleteProvider(${originalIndex})" title="删除">删除</a>
+                                </div>
+                            </td>
+                        </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
 }
 
 function determineProviderStatus(provider) {
     const runtimeStatus = provider && provider.provider ? providerStatusMap[provider.provider] : null;
-    const manualEnabled = isProviderEnabled(provider);
+    const manualEnabled = provider && provider.enabled !== false;
 
     if (!manualEnabled) {
-        return {
-            label: '已禁用',
-            className: 'status-disabled',
-            detail: ''
-        };
+        return { label: '已禁用', className: 'danger', detail: '' };
     }
 
     if (runtimeStatus && runtimeStatus.auto_disabled) {
@@ -380,179 +306,71 @@ function determineProviderStatus(provider) {
         if (!detail && runtimeStatus.last_error) {
             detail = runtimeStatus.last_error;
         }
-        return {
-            label: '自动禁用',
-            className: 'status-auto',
-            detail
-        };
+        return { label: '自动禁用', className: 'warning', detail };
     }
 
-    return {
-        label: '已启用',
-        className: 'status-enabled',
-        detail: ''
-    };
+    return { label: '已启用', className: 'success', detail: '' };
 }
 
-function formatProviderForSave(provider) {
-    if (!provider) {
-        return provider;
-    }
-
-    const priorityValue = Number.isFinite(provider.priority)
-        ? provider.priority
-        : parseInt(provider.priority, 10) || 0;
-
-    const normalized = {
-        provider: provider.provider,
-        base_url: provider.base_url,
-        api_key: provider.api_key,
-        priority: priorityValue
-    };
-
-    if (Array.isArray(provider.model) && provider.model.length > 0) {
-        normalized.model = provider.model.map(item => item);
-    }
-    if (provider.models_endpoint && provider.models_endpoint !== '/v1/models') {
-        normalized.models_endpoint = provider.models_endpoint;
-    }
-    if (provider.enabled === false) {
-        normalized.enabled = false;
-    }
-
-    const knownKeys = new Set(['provider', 'base_url', 'api_key', 'priority', 'model', 'models_endpoint', 'enabled']);
-    Object.keys(provider).forEach((key) => {
-        if (!knownKeys.has(key)) {
-            normalized[key] = provider[key];
-        }
-    });
-
-    return normalized;
-}
-
-// 渲染 Preferences
+// ==================== Preferences 渲染 ====================
 function renderPreferences() {
-    const container = document.getElementById('headerPrefsView');
+    // 只更新头部显示
     const prefs = configData.preferences || {};
     const modelTimeout = getPreferenceNumber(prefs.model_timeout, 20);
     const cooldownPeriod = getPreferenceNumber(prefs.cooldown_period, 300);
 
-    container.innerHTML = `
-        <div class="header-prefs-item">
-            <strong>Timeout:</strong>
-            <span>${modelTimeout}s</span>
-        </div>
-        <div class="header-prefs-divider"></div>
-        <div class="header-prefs-item">
-            <strong>Cooldown:</strong>
-            <span>${cooldownPeriod}s</span>
-        </div>
-        <div class="header-prefs-divider"></div>
-        <div class="header-prefs-item">
-            <strong>Proxy:</strong>
-            <span>${prefs.proxy ? escapeHtml(prefs.proxy) : '未设置'}</span>
-        </div>
-        <a class="action-link edit" onclick="openPreferencesModal()" title="编辑 Preferences" style="margin-left: 8px;">编辑</a>
-    `;
+    document.getElementById('headerTimeout').textContent = `${modelTimeout}s`;
+    document.getElementById('headerCooldown').textContent = `${cooldownPeriod}s`;
+    document.getElementById('headerProxy').textContent = prefs.proxy ? escapeHtml(prefs.proxy) : '未设置';
 }
 
-function startStatusPolling() {
-    stopStatusPolling();
-    if (!apiKey) {
-        return;
-    }
-    statusPollTimer = setInterval(() => {
-        loadProviderStatus({ silent: true });
-    }, STATUS_POLL_INTERVAL);
-}
-
-function stopStatusPolling() {
-    if (statusPollTimer) {
-        clearInterval(statusPollTimer);
-        statusPollTimer = null;
-    }
-}
-
-async function loadProviderStatus(options = {}) {
-    const { silent = false } = options;
-    if (!apiKey) {
-        return;
-    }
-
-    try {
-        const response = await fetch('/admin/providers/status', {
-            headers: {
-                'X-API-Key': apiKey
-            }
-        });
-
-        if (response.status === 401) {
-            if (!silent) {
-                showError('API Key 无效，请重新登录');
-            }
-            handleLogout();
-            return;
-        }
-
-        if (!response.ok) {
-            throw new Error('加载 Provider 状态失败');
-        }
-
-        const data = await response.json();
-        const runtimeList = Array.isArray(data.providers) ? data.providers : [];
-        providerStatusMap = {};
-        runtimeList.forEach(status => {
-            if (status && status.name) {
-                providerStatusMap[status.name] = status;
-            }
-        });
-
-        if (configData && configData.providers) {
-            renderProviders();
-        }
-    } catch (error) {
-        if (!silent) {
-        showError(error.message);
-        }
-    }
-}
-
-// 打开 Provider 编辑模态框
-function openProviderModal(index = -1) {
+// ==================== Provider 操作 ====================
+function openProviderModal(index = -1, section = 'info') {
     editingProviderIndex = index;
     const modal = document.getElementById('providerModal');
     const title = document.getElementById('providerModalTitle');
 
     if (index >= 0) {
-        // 编辑模式
         title.textContent = '编辑 Provider';
         const provider = configData.providers[index];
         document.getElementById('providerName').value = provider.provider;
         document.getElementById('providerBaseUrl').value = provider.base_url;
         document.getElementById('providerApiKey').value = provider.api_key;
         document.getElementById('providerPriority').value = provider.priority || 0;
-        document.getElementById('providerModels').value = provider.model ? provider.model.join('\n') : '';
         document.getElementById('providerModelsEndpoint').value = provider.models_endpoint || '/v1/models';
-        document.getElementById('providerEnabled').checked = provider.enabled !== false;
+
+        const initial = Array.isArray(provider.model) ? [...provider.model] : [];
+        providerModelsState = {
+            models: [...initial],
+            selected: new Set(initial),
+            filter: '',
+        };
+        renderProviderModelsUI();
     } else {
-        // 添加模式
         title.textContent = '添加 Provider';
         document.getElementById('providerForm').reset();
         document.getElementById('providerPriority').value = '0';
         document.getElementById('providerModelsEndpoint').value = '/v1/models';
-        document.getElementById('providerEnabled').checked = true;
+        providerModelsState = { models: [], selected: new Set(), filter: '' };
+        renderProviderModelsUI();
     }
 
     modal.classList.add('show');
+
+    if (section === 'models') {
+        setTimeout(() => {
+            document.querySelector('.models-wrapper')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            fetchModelsInProviderModal();
+        }, 50);
+    }
 }
 
-// 关闭 Provider 模态框
 function closeProviderModal() {
     document.getElementById('providerModal').classList.remove('show');
     editingProviderIndex = -1;
+    providerModelsState = { models: [], selected: new Set(), filter: '' };
 }
 
-// 保存 Provider
 async function handleSaveProvider(e) {
     e.preventDefault();
 
@@ -563,35 +381,28 @@ async function handleSaveProvider(e) {
         priority: parseInt(document.getElementById('providerPriority').value) || 0
     };
 
-    const modelsText = document.getElementById('providerModels').value.trim();
-    if (modelsText) {
-        provider.model = modelsText.split('\n').map(m => m.trim()).filter(m => m);
-    }
+    const selectedModels = Array.from(providerModelsState.selected || []);
+    if (selectedModels.length > 0) provider.model = selectedModels;
 
     const modelsEndpoint = document.getElementById('providerModelsEndpoint').value.trim();
-    // 只有在非默认值时才保存 models_endpoint
     if (modelsEndpoint && modelsEndpoint !== '/v1/models') {
         provider.models_endpoint = modelsEndpoint;
-    }
-
-    if (document.getElementById('providerEnabled').checked) {
-        delete provider.enabled;
-    } else {
-        provider.enabled = false;
     }
 
     const normalizedProvider = formatProviderForSave(provider);
     const isEdit = editingProviderIndex >= 0;
     const originalProvider = isEdit ? configData.providers[editingProviderIndex] : null;
 
-    // 更新本地配置
+    if (originalProvider && originalProvider.enabled === false) {
+        normalizedProvider.enabled = false;
+    }
+
     if (isEdit) {
         configData.providers[editingProviderIndex] = normalizedProvider;
     } else {
         configData.providers.push(normalizedProvider);
     }
 
-    // 保存到服务器
     const success = await saveConfig();
     if (success) {
         closeProviderModal();
@@ -605,7 +416,6 @@ async function handleSaveProvider(e) {
     }
 }
 
-// 删除 Provider
 async function deleteProvider(index) {
     if (!confirm('确定要删除这个 Provider 吗？')) return;
 
@@ -641,7 +451,31 @@ async function toggleProviderEnabled(index) {
     }
 }
 
-// 打开 Preferences 编辑模态框
+async function updateProviderPriority(index, newValue) {
+    if (!configData || !Array.isArray(configData.providers) || !configData.providers[index]) {
+        return;
+    }
+
+    const originalSnapshot = formatProviderForSave(configData.providers[index]);
+    const priority = parseInt(newValue, 10);
+
+    if (isNaN(priority)) {
+        showError('优先级必须是有效的数字');
+        renderProviders();
+        return;
+    }
+
+    const updatedProvider = { ...originalSnapshot, priority };
+    configData.providers[index] = updatedProvider;
+
+    const success = await saveConfig();
+    if (!success) {
+        configData.providers[index] = originalSnapshot;
+        renderProviders();
+    }
+}
+
+// ==================== Preferences 操作 ====================
 function openPreferencesModal() {
     const prefs = configData.preferences || {};
     document.getElementById('modelTimeout').value = getPreferenceNumber(prefs.model_timeout, 20);
@@ -651,16 +485,13 @@ function openPreferencesModal() {
     document.getElementById('preferencesModal').classList.add('show');
 }
 
-// 关闭 Preferences 模态框
 function closePreferencesModal() {
     document.getElementById('preferencesModal').classList.remove('show');
 }
 
-// 保存 Preferences
 async function handleSavePreferences(e) {
     e.preventDefault();
 
-    // 保持原有的 preferences 对象，只更新修改的字段
     if (!configData.preferences) {
         configData.preferences = {};
     }
@@ -672,7 +503,6 @@ async function handleSavePreferences(e) {
     if (proxy) {
         configData.preferences.proxy = proxy;
     } else {
-        // 如果 proxy 为空，删除该字段
         delete configData.preferences.proxy;
     }
 
@@ -682,111 +512,172 @@ async function handleSavePreferences(e) {
     }
 }
 
-// 保存配置到服务器
-async function saveConfig() {
+// ==================== Models 管理 ====================
+async function fetchModelsInProviderModal() {
+    const base_url = document.getElementById('providerBaseUrl').value.trim();
+    const api_key_val = document.getElementById('providerApiKey').value.trim();
+    const models_endpoint = document.getElementById('providerModelsEndpoint').value.trim() || '/v1/models';
+    const listEl = document.getElementById('modelsList');
+
+    if (listEl) listEl.innerHTML = '<div style="padding: 16px; color: var(--text-muted);">加载中...</div>';
+
     try {
-        const orderedProviders = Array.isArray(configData?.providers)
-            ? configData.providers.map(formatProviderForSave)
-            : [];
-        const payload = {
-            ...configData,
-            providers: orderedProviders
-        };
-        const response = await fetch('/admin/config', {
+        if (!base_url || !api_key_val) {
+            throw new Error('请先填写 Base URL 与 API Key');
+        }
+
+        const resp = await fetch('/admin/providers/_probe_models', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-API-Key': apiKey
+                'X-API-Key': apiKey,
             },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({ base_url, api_key: api_key_val, models_endpoint }),
+        });
+
+        if (resp.status === 401) {
+            showError('API Key 无效，请重新登录');
+            handleLogout();
+            return;
+        }
+
+        if (!resp.ok) throw new Error('获取模型失败');
+
+        const data = await resp.json();
+        const upstream = Array.isArray(data.models) ? data.models : [];
+        const union = Array.from(new Set([...(providerModelsState.models || []), ...upstream]));
+        providerModelsState.models = union;
+        renderProviderModelsUI();
+    } catch (e) {
+        renderProviderModelsUI();
+        showError(e.message || '获取模型失败');
+    }
+}
+
+function renderProviderModelsUI() {
+    const listEl = document.getElementById('modelsList');
+    const master = document.getElementById('modelsMaster');
+    const selectedCountEl = document.getElementById('modelsSelectedCount');
+    const models = Array.isArray(providerModelsState.models) ? providerModelsState.models : [];
+    const selected = providerModelsState.selected || new Set();
+    const filter = (providerModelsState.filter || '').toLowerCase();
+
+    if (!listEl) return;
+
+    const visible = filter ? models.filter(m => m.toLowerCase().includes(filter)) : models;
+
+    if (models.length === 0) {
+        listEl.innerHTML = '<div style="padding: 16px; color: var(--text-muted);">暂无模型，请先从上游获取或手动添加</div>';
+    } else if (visible.length === 0) {
+        listEl.innerHTML = '<div style="padding: 16px; color: var(--text-muted);">无匹配结果</div>';
+    } else {
+        listEl.innerHTML = visible.map((m, i) => {
+            const id = `mdl_${i}`;
+            const checked = selected.has(m) ? 'checked' : '';
+            return `
+            <label class="model-item" for="${id}">
+                <input type="checkbox" id="${id}" data-model="${escapeHtml(m)}" ${checked}>
+                <span>${escapeHtml(m)}</span>
+            </label>`;
+        }).join('');
+    }
+
+    if (selectedCountEl) selectedCountEl.textContent = `(${selected.size || 0})`;
+    if (master) {
+        const allVisibleSelected = visible.length > 0 && visible.every(m => selected.has(m));
+        master.checked = allVisibleSelected;
+        master.indeterminate = visible.length > 0 && !allVisibleSelected && visible.some(m => selected.has(m));
+    }
+}
+
+function onModelsMasterToggle(checked) {
+    const models = Array.isArray(providerModelsState.models) ? providerModelsState.models : [];
+    const filter = (providerModelsState.filter || '').toLowerCase();
+    const visible = filter ? models.filter(m => m.toLowerCase().includes(filter)) : models;
+
+    if (checked) {
+        visible.forEach(m => providerModelsState.selected.add(m));
+    } else {
+        visible.forEach(m => providerModelsState.selected.delete(m));
+    }
+
+    renderProviderModelsUI();
+}
+
+function onModelsSearchChange(val) {
+    providerModelsState.filter = (val || '').trim();
+    renderProviderModelsUI();
+}
+
+function addCustomModel() {
+    const input = document.getElementById('customModelInput');
+    if (!input) return;
+
+    const value = input.value.trim();
+    if (!value) return;
+
+    const modelsSet = new Set(providerModelsState.models || []);
+    modelsSet.add(value);
+    providerModelsState.models = Array.from(modelsSet);
+    providerModelsState.selected.add(value);
+    input.value = '';
+    renderProviderModelsUI();
+    showSuccess('已添加自定义模型');
+}
+
+// ==================== 状态轮询 ====================
+function startStatusPolling() {
+    stopStatusPolling();
+    if (!apiKey) return;
+    statusPollTimer = setInterval(() => {
+        loadProviderStatus({ silent: true });
+    }, STATUS_POLL_INTERVAL);
+}
+
+function stopStatusPolling() {
+    if (statusPollTimer) {
+        clearInterval(statusPollTimer);
+        statusPollTimer = null;
+    }
+}
+
+async function loadProviderStatus(options = {}) {
+    const { silent = false } = options;
+    if (!apiKey) return;
+
+    try {
+        const response = await fetch('/admin/providers/status', {
+            headers: { 'X-API-Key': apiKey }
         });
 
         if (response.status === 401) {
-            showError('API Key 无效，请重新登录');
-            setTimeout(() => handleLogout(), 2000);
-            return false;
+            if (!silent) showError('API Key 无效，请重新登录');
+            handleLogout();
+            return;
         }
 
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || '保存配置失败');
-        }
+        if (!response.ok) throw new Error('加载 Provider 状态失败');
 
-        showSuccess('配置已保存');
-        const refreshed = await fetchConfigFromServer({ silent: true });
-        if (refreshed.success && refreshed.data) {
-            configData = refreshed.data;
-        } else {
-            if (refreshed.unauthorized) {
-                showError('API Key 无效，请重新登录');
-                handleLogout();
-                return false;
+        const data = await response.json();
+        const runtimeList = Array.isArray(data.providers) ? data.providers : [];
+        providerStatusMap = {};
+        runtimeList.forEach(status => {
+            if (status && status.name) {
+                providerStatusMap[status.name] = status;
             }
-            configData.providers = orderedProviders;
+        });
+
+        if (configData && configData.providers) {
+            renderProviders();
         }
-        renderProviders();
-        renderPreferences();
-        await loadProviderStatus({ silent: true });
-        return true;
     } catch (error) {
-        showError(error.message);
-        return false;
+        if (!silent) showError(error.message);
     }
 }
 
-// 显示 Toast 提示
-function showToast(message, type = 'success') {
-    // 移除已存在的 toast
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) {
-        existingToast.remove();
-    }
-
-    // 创建新的 toast
-    const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.textContent = message;
-    document.body.appendChild(toast);
-
-    // 触发动画
-    setTimeout(() => toast.classList.add('show'), 10);
-
-    // 自动移除
-    const duration = type === 'error' ? 5000 : 3000;
-    setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-    }, duration);
-}
-
-// 显示错误信息
-function showError(message) {
-    showToast(message, 'error');
-}
-
-// 显示成功信息
-function showSuccess(message) {
-    showToast(message, 'success');
-}
-
-// HTML 转义
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// 遮盖 API Key
-function maskApiKey(key) {
-    if (!key || key.length <= 8) return '********';
-    return key.substring(0, 4) + '****' + key.substring(key.length - 4);
-}
-
-// ---------------- 日志查看 ----------------
+// ==================== 日志查看 ====================
 async function initLogsView() {
-    // 加载最近日志
     await loadRecentLogs();
-    // 开始流式
     if (!logsConnected) {
         startLogStream();
     }
@@ -797,15 +688,19 @@ async function loadRecentLogs() {
         const resp = await fetch('/admin/logs/recent?limit=500', {
             headers: { 'X-API-Key': apiKey }
         });
+
         if (resp.status === 401) {
             showError('API Key 无效，请重新登录');
             handleLogout();
             return;
         }
+
         if (!resp.ok) throw new Error('加载最近日志失败');
+
         const data = await resp.json();
         const out = document.getElementById('logOutput');
         if (!out) return;
+
         out.textContent = '';
         (data.logs || []).forEach(item => appendLogItem(item));
     } catch (e) {
@@ -818,6 +713,7 @@ function startLogStream() {
     logsAbortController = new AbortController();
     logsConnected = true;
     sseBuffer = '';
+
     logsReaderTask = (async () => {
         while (logsConnected) {
             try {
@@ -825,12 +721,15 @@ function startLogStream() {
                     headers: { 'X-API-Key': apiKey },
                     signal: logsAbortController.signal,
                 });
+
                 if (resp.status === 401) {
                     showError('API Key 无效，请重新登录');
                     handleLogout();
                     return;
                 }
+
                 if (!resp.ok || !resp.body) throw new Error('连接日志流失败');
+
                 const reader = resp.body.getReader();
                 for (;;) {
                     const { value, done } = await reader.read();
@@ -838,10 +737,7 @@ function startLogStream() {
                     if (value) processSseChunk(value);
                 }
             } catch (err) {
-                if (logsAbortController?.signal.aborted) {
-                    break;
-                }
-                // 断线重连
+                if (logsAbortController?.signal.aborted) break;
                 await new Promise(r => setTimeout(r, 1500));
             }
         }
@@ -877,7 +773,7 @@ function processSseChunk(uint8) {
             try {
                 const obj = JSON.parse(dataStr);
                 appendLogItem(obj);
-            } catch (_) { /* ignore parse errors */ }
+            } catch (_) { }
         }
     }
 }
@@ -885,11 +781,13 @@ function processSseChunk(uint8) {
 function appendLogItem(item) {
     const out = document.getElementById('logOutput');
     if (!out) return;
+
     const line = item && item.message ? item.message : JSON.stringify(item);
     if (logsPaused) {
         logsBufferWhilePaused.push(line);
         return;
     }
+
     out.textContent += (out.textContent ? '\n' : '') + line;
     maybeAutoScroll();
 }
@@ -897,6 +795,7 @@ function appendLogItem(item) {
 function maybeAutoScroll() {
     const out = document.getElementById('logOutput');
     if (!out) return;
+
     const auto = document.getElementById('autoScrollToggle');
     if (auto && auto.checked) {
         out.scrollTop = out.scrollHeight;
@@ -906,6 +805,7 @@ function maybeAutoScroll() {
 function togglePauseLogs() {
     logsPaused = !logsPaused;
     const btn = document.getElementById('pauseLogsBtn');
+
     if (logsPaused) {
         btn.textContent = '继续';
     } else {
@@ -925,4 +825,200 @@ function clearLogsView() {
     const out = document.getElementById('logOutput');
     if (out) out.textContent = '';
     logsBufferWhilePaused = [];
+}
+
+// ==================== 事件处理 ====================
+async function handleGlobalClick(event) {
+    // 复制字段
+    const fieldTarget = event.target.closest('[data-field]');
+    if (fieldTarget) {
+        const providerIndex = Number(fieldTarget.dataset.providerIndex);
+        const field = fieldTarget.dataset.field;
+        if (!Number.isNaN(providerIndex) && field) {
+            await copyProviderField(providerIndex, field);
+        }
+        return;
+    }
+
+    // 复制文本
+    const copyTarget = event.target.closest('[data-copy-text]');
+    if (copyTarget) {
+        const text = copyTarget.dataset.copyText;
+        if (text) {
+            const success = await copyTextToClipboard(text);
+            if (success) {
+                showSuccess('已复制到剪贴板');
+            } else {
+                showError('复制失败，请手动复制');
+            }
+        }
+        return;
+    }
+}
+
+function handleGlobalChange(e) {
+    const target = e.target;
+    if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
+
+    const parent = target.parentElement?.parentElement;
+    if (!parent || parent.id !== 'modelsList') return;
+
+    const model = target.getAttribute('data-model');
+    if (!model) return;
+
+    if (target.checked) {
+        providerModelsState.selected.add(model);
+    } else {
+        providerModelsState.selected.delete(model);
+    }
+
+    renderProviderModelsUI();
+}
+
+function handleGlobalKeydown(e) {
+    if (e.key === 'Enter') {
+        const el = document.activeElement;
+        if (el && el.id === 'customModelInput') {
+            e.preventDefault();
+            addCustomModel();
+        }
+    }
+}
+
+// ==================== 工具函数 ====================
+async function copyProviderField(providerIndex, field) {
+    if (!configData || !Array.isArray(configData.providers)) {
+        showError('尚未加载配置，无法复制');
+        return;
+    }
+
+    const provider = configData.providers[providerIndex];
+    if (!provider || typeof provider[field] !== 'string') {
+        showError('未找到可复制的内容');
+        return;
+    }
+
+    const success = await copyTextToClipboard(provider[field]);
+    if (success) {
+        showSuccess('已复制到剪贴板');
+    } else {
+        showError('复制失败，请手动复制');
+    }
+}
+
+async function copyTextToClipboard(text) {
+    if (!text) return false;
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (err) {
+            // fall back
+        }
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'absolute';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    let succeeded = false;
+    try {
+        succeeded = document.execCommand('copy');
+    } catch (err) {
+        succeeded = false;
+    }
+
+    document.body.removeChild(textarea);
+    return succeeded;
+}
+
+function formatProviderForSave(provider) {
+    if (!provider) return provider;
+
+    const priorityValue = Number.isFinite(provider.priority)
+        ? provider.priority
+        : parseInt(provider.priority, 10) || 0;
+
+    const normalized = {
+        provider: provider.provider,
+        base_url: provider.base_url,
+        api_key: provider.api_key,
+        priority: priorityValue
+    };
+
+    if (Array.isArray(provider.model) && provider.model.length > 0) {
+        normalized.model = provider.model.map(item => item);
+    }
+
+    if (provider.models_endpoint && provider.models_endpoint !== '/v1/models') {
+        normalized.models_endpoint = provider.models_endpoint;
+    }
+
+    if (provider.enabled === false) {
+        normalized.enabled = false;
+    }
+
+    const knownKeys = new Set(['provider', 'base_url', 'api_key', 'priority', 'model', 'models_endpoint', 'enabled']);
+    Object.keys(provider).forEach((key) => {
+        if (!knownKeys.has(key)) {
+            normalized[key] = provider[key];
+        }
+    });
+
+    return normalized;
+}
+
+function getPreferenceNumber(value, fallback) {
+    return value === undefined || value === null ? fallback : value;
+}
+
+function parseNumberInput(value, fallback) {
+    const trimmed = value.trim();
+    if (trimmed === '') return fallback;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function maskApiKey(key) {
+    if (!key || key.length <= 8) return '********';
+    return key.substring(0, 4) + '****' + key.substring(key.length - 4);
+}
+
+function showToast(message, type = 'success') {
+    const existingToast = document.querySelector('.toast');
+    if (existingToast) {
+        existingToast.remove();
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    setTimeout(() => toast.classList.add('show'), 10);
+
+    const duration = type === 'error' ? 5000 : 3000;
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
+function showError(message) {
+    showToast(message, 'error');
+}
+
+function showSuccess(message) {
+    showToast(message, 'success');
 }

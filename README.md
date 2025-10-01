@@ -15,7 +15,6 @@
 ## 项目结构
 
 ```
-requirements.txt
 config.yaml.template
 uniapi/
   __init__.py
@@ -23,6 +22,10 @@ uniapi/
   app.py
   config.py
   provider_pool.py
+  http_client.py
+  static/
+    index.html
+    app.js
 ```
 
 ## 快速开始
@@ -85,7 +88,7 @@ uniapi/
 
 ## 开发测试
 
-编译语法检查：
+快速语法检查：
 
 ```bash
 uv run python -m compileall uniapi
