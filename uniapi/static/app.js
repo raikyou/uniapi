@@ -4,6 +4,14 @@ let configData = null;
 let editingProviderIndex = -1;
 let providerStatusMap = {};
 let statusPollTimer = null;
+// 日志相关状态
+let logsConnected = false;
+let logsPaused = false;
+let logsAbortController = null;
+let logsReaderTask = null;
+let logsBufferWhilePaused = [];
+let sseBuffer = '';
+const textDecoder = new TextDecoder('utf-8');
 
 const STATUS_POLL_INTERVAL = 10000;
 
@@ -133,6 +141,16 @@ document.addEventListener('DOMContentLoaded', function() {
         preferencesFormEl.addEventListener('submit', handleSavePreferences);
     }
 
+    // 日志控制按钮
+    const pauseBtn = document.getElementById('pauseLogsBtn');
+    if (pauseBtn) {
+        pauseBtn.addEventListener('click', togglePauseLogs);
+    }
+    const clearBtn = document.getElementById('clearLogsBtn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', clearLogsView);
+    }
+
     document.addEventListener('click', async (event) => {
         // 处理 base_url 和 api_key 的复制
         const copyWrapper = event.target.closest('.copy-wrapper');
@@ -161,6 +179,26 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 });
+
+function switchTab(tab) {
+    const configTab = document.getElementById('configTab');
+    const logsTab = document.getElementById('logsTab');
+    const tabConfigBtn = document.getElementById('tabConfig');
+    const tabLogsBtn = document.getElementById('tabLogs');
+
+    if (tab === 'logs') {
+        configTab.classList.remove('active');
+        logsTab.classList.add('active');
+        tabConfigBtn.classList.remove('active');
+        tabLogsBtn.classList.add('active');
+        initLogsView();
+    } else {
+        logsTab.classList.remove('active');
+        configTab.classList.add('active');
+        tabLogsBtn.classList.remove('active');
+        tabConfigBtn.classList.add('active');
+    }
+}
 
 // 登录处理
 async function handleLogin(e) {
@@ -194,6 +232,12 @@ async function login() {
     renderPreferences();
     await loadProviderStatus({ silent: true });
     startStatusPolling();
+
+    // 如果当前在日志页，初始化日志
+    const logsTabVisible = document.getElementById('logsTab')?.classList.contains('active');
+    if (logsTabVisible) {
+        initLogsView();
+    }
 }
 
 // 登出
@@ -206,6 +250,11 @@ function handleLogout() {
     document.getElementById('loginView').classList.remove('hidden');
     document.getElementById('mainView').classList.add('hidden');
     document.getElementById('apiKey').value = '';
+
+    // 停止日志连接
+    stopLogStream();
+    const out = document.getElementById('logOutput');
+    if (out) out.textContent = '';
 }
 
 // 渲染 Providers 列表
@@ -731,4 +780,149 @@ function escapeHtml(text) {
 function maskApiKey(key) {
     if (!key || key.length <= 8) return '********';
     return key.substring(0, 4) + '****' + key.substring(key.length - 4);
+}
+
+// ---------------- 日志查看 ----------------
+async function initLogsView() {
+    // 加载最近日志
+    await loadRecentLogs();
+    // 开始流式
+    if (!logsConnected) {
+        startLogStream();
+    }
+}
+
+async function loadRecentLogs() {
+    try {
+        const resp = await fetch('/admin/logs/recent?limit=500', {
+            headers: { 'X-API-Key': apiKey }
+        });
+        if (resp.status === 401) {
+            showError('API Key 无效，请重新登录');
+            handleLogout();
+            return;
+        }
+        if (!resp.ok) throw new Error('加载最近日志失败');
+        const data = await resp.json();
+        const out = document.getElementById('logOutput');
+        if (!out) return;
+        out.textContent = '';
+        (data.logs || []).forEach(item => appendLogItem(item));
+    } catch (e) {
+        showError(e.message || '加载最近日志失败');
+    }
+}
+
+function startLogStream() {
+    stopLogStream();
+    logsAbortController = new AbortController();
+    logsConnected = true;
+    sseBuffer = '';
+    logsReaderTask = (async () => {
+        while (logsConnected) {
+            try {
+                const resp = await fetch('/admin/logs/stream', {
+                    headers: { 'X-API-Key': apiKey },
+                    signal: logsAbortController.signal,
+                });
+                if (resp.status === 401) {
+                    showError('API Key 无效，请重新登录');
+                    handleLogout();
+                    return;
+                }
+                if (!resp.ok || !resp.body) throw new Error('连接日志流失败');
+                const reader = resp.body.getReader();
+                for (;;) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    if (value) processSseChunk(value);
+                }
+            } catch (err) {
+                if (logsAbortController?.signal.aborted) {
+                    break;
+                }
+                // 断线重连
+                await new Promise(r => setTimeout(r, 1500));
+            }
+        }
+    })();
+}
+
+function stopLogStream() {
+    logsConnected = false;
+    if (logsAbortController) {
+        logsAbortController.abort();
+        logsAbortController = null;
+    }
+    logsReaderTask = null;
+    sseBuffer = '';
+}
+
+function processSseChunk(uint8) {
+    const text = textDecoder.decode(uint8, { stream: true });
+    sseBuffer += text;
+    let idx;
+    while ((idx = sseBuffer.indexOf('\n\n')) !== -1) {
+        const eventBlock = sseBuffer.slice(0, idx);
+        sseBuffer = sseBuffer.slice(idx + 2);
+        const lines = eventBlock.split('\n');
+        let dataLines = [];
+        for (const line of lines) {
+            if (line.startsWith('data:')) {
+                dataLines.push(line.slice(5).trimStart());
+            }
+        }
+        if (dataLines.length) {
+            const dataStr = dataLines.join('\n');
+            try {
+                const obj = JSON.parse(dataStr);
+                appendLogItem(obj);
+            } catch (_) { /* ignore parse errors */ }
+        }
+    }
+}
+
+function appendLogItem(item) {
+    const out = document.getElementById('logOutput');
+    if (!out) return;
+    const line = item && item.message ? item.message : JSON.stringify(item);
+    if (logsPaused) {
+        logsBufferWhilePaused.push(line);
+        return;
+    }
+    out.textContent += (out.textContent ? '\n' : '') + line;
+    maybeAutoScroll();
+}
+
+function maybeAutoScroll() {
+    const out = document.getElementById('logOutput');
+    if (!out) return;
+    const auto = document.getElementById('autoScrollToggle');
+    if (auto && auto.checked) {
+        out.scrollTop = out.scrollHeight;
+    }
+}
+
+function togglePauseLogs() {
+    logsPaused = !logsPaused;
+    const btn = document.getElementById('pauseLogsBtn');
+    if (logsPaused) {
+        btn.textContent = '继续';
+    } else {
+        btn.textContent = '暂停';
+        if (logsBufferWhilePaused.length) {
+            const out = document.getElementById('logOutput');
+            if (out) {
+                out.textContent += (out.textContent ? '\n' : '') + logsBufferWhilePaused.join('\n');
+                logsBufferWhilePaused = [];
+                maybeAutoScroll();
+            }
+        }
+    }
+}
+
+function clearLogsView() {
+    const out = document.getElementById('logOutput');
+    if (out) out.textContent = '';
+    logsBufferWhilePaused = [];
 }

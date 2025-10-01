@@ -28,6 +28,58 @@ if logging.getLogger().getEffectiveLevel() > logging.INFO and not logger.handler
     logger.propagate = False
 logger.setLevel(logging.INFO)
 
+# --- In-memory log broadcasting for admin log viewer ---
+import contextlib
+from collections import deque
+from typing import Deque, Set
+
+
+class _AdminLogHandler(logging.Handler):
+    def __init__(self, buffer_size: int = 500) -> None:
+        super().__init__(level=logging.INFO)
+        self.buffer_size = buffer_size
+        self.buffer: Deque[dict] = deque(maxlen=buffer_size)
+        self.subscribers: Set[asyncio.Queue] = set()
+        self._formatter = logging.Formatter(
+            fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+
+    def emit(self, record: logging.LogRecord) -> None:  # sync context
+        # Avoid duplicate handling when attached to multiple loggers
+        if getattr(record, "_admin_emitted", False):
+            return
+        setattr(record, "_admin_emitted", True)
+        try:
+            msg = self._formatter.format(record)
+        except Exception:  # pragma: no cover - defensive
+            msg = record.getMessage()
+        item = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": msg,
+        }
+        self.buffer.append(item)
+        for q in list(self.subscribers):
+            # best-effort put_nowait; drop if back-pressured
+            with contextlib.suppress(asyncio.QueueFull):
+                q.put_nowait(item)
+
+    def subscribe(self, max_queue: int = 1000) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=max_queue)
+        self.subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self.subscribers.discard(q)
+
+
+_admin_log_handler = _AdminLogHandler()
+logging.getLogger().addHandler(_admin_log_handler)
+# Also attach to this module logger in case propagation is disabled
+logging.getLogger(__name__).addHandler(_admin_log_handler)
+
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -630,6 +682,47 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
             raise HTTPException(status_code=500, detail="Failed to read provider status")
 
         return {"providers": snapshot}
+
+    # ---------- Admin log endpoints ----------
+    def _admin_key_ok(request: Request) -> bool:
+        provided_key = _extract_api_key(request.headers)
+        if not provided_key:
+            provided_key = request.query_params.get("api_key")
+        return bool(provided_key and provided_key == engine.config.api_key)
+
+    @app.get("/admin/logs/recent")
+    async def admin_logs_recent(request: Request):
+        if not _admin_key_ok(request):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        try:
+            limit = int(request.query_params.get("limit", 500))
+        except ValueError:
+            limit = 500
+        limit = max(1, min(2000, limit))
+        items = list(_admin_log_handler.buffer)[-limit:]
+        return {"logs": items}
+
+    @app.get("/admin/logs/stream")
+    async def admin_logs_stream(request: Request):
+        if not _admin_key_ok(request):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+        async def event_iterator():
+            queue = _admin_log_handler.subscribe()
+            try:
+                # Send a comment to establish stream
+                yield b": ok\n\n"
+                while True:
+                    # If client disconnects, this raises
+                    item = await queue.get()
+                    payload = json.dumps(item, ensure_ascii=False)
+                    yield f"data: {payload}\n\n".encode("utf-8")
+            except asyncio.CancelledError:  # client disconnected
+                pass
+            finally:
+                _admin_log_handler.unsubscribe(queue)
+
+        return StreamingResponse(event_iterator(), media_type="text/event-stream")
 
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     async def universal_proxy(full_path: str, request: Request) -> Response:
