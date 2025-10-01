@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
-from starlette.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import StreamingResponse, FileResponse
 from starlette.datastructures import Headers, MutableHeaders
 
 from .config import AppConfig, ConfigError, load_config
@@ -39,6 +41,10 @@ HOP_BY_HOP_HEADERS = {
 }
 
 
+TRUTHY_STRINGS = {"1", "true", "yes", "on"}
+FALSY_STRINGS = {"0", "false", "no", "off"}
+
+
 def _extract_model_from_body(body_bytes: bytes, headers: Headers) -> Optional[str]:
     content_type = headers.get("content-type", "").lower()
     if "application/json" not in content_type:
@@ -54,6 +60,51 @@ def _extract_model_from_body(body_bytes: bytes, headers: Headers) -> Optional[st
         if isinstance(model_value, str):
             return model_value
     return None
+
+
+def _is_streaming_request(
+    body_bytes: bytes,
+    headers: Headers,
+    query_items: list[tuple[str, str]],
+) -> bool:
+    accept_header = headers.get("accept", "").lower()
+    if "text/event-stream" in accept_header:
+        return True
+
+    for key, value in query_items:
+        if key.lower() in {"stream", "streaming"}:
+            lowered = value.lower()
+            if lowered in TRUTHY_STRINGS:
+                return True
+            if lowered in FALSY_STRINGS:
+                return False
+
+    content_type = headers.get("content-type", "").lower()
+    if "application/json" not in content_type or not body_bytes:
+        return False
+    try:
+        payload = json.loads(body_bytes)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+
+    stream_value = payload.get("stream")
+    if stream_value is None:
+        stream_value = payload.get("streaming")
+
+    if isinstance(stream_value, bool):
+        return stream_value
+    if isinstance(stream_value, (int, float)):
+        return bool(stream_value)
+    if isinstance(stream_value, str):
+        lowered = stream_value.lower()
+        if lowered in TRUTHY_STRINGS:
+            return True
+        if lowered in FALSY_STRINGS:
+            return False
+
+    return False
 
 
 def _extract_api_key(headers: Headers) -> Optional[str]:
@@ -256,6 +307,37 @@ class ProxyEngine:
                 self._client = None
         await self._pool.shutdown()
 
+    async def provider_status_snapshot(self) -> list[dict[str, object]]:
+        await self.pool.initialize()
+        now = datetime.now(timezone.utc)
+        snapshot: list[dict[str, object]] = []
+        for state in self.pool.states:
+            cooldown_remaining: Optional[float] = None
+            if state.cooldown_until is not None:
+                remaining = (state.cooldown_until - now).total_seconds()
+                cooldown_remaining = max(0.0, remaining)
+            auto_disabled = state.is_on_cooldown(now)
+            if not state.config.enabled:
+                status = "disabled"
+            elif auto_disabled:
+                status = "auto_disabled"
+            else:
+                status = "enabled"
+
+            snapshot.append(
+                {
+                    "name": state.config.name,
+                    "enabled": state.config.enabled,
+                    "auto_disabled": auto_disabled,
+                    "status": status,
+                    "cooldown_until": state.cooldown_until.isoformat() if state.cooldown_until else None,
+                    "cooldown_remaining_seconds": cooldown_remaining,
+                    "last_error": state.last_error,
+                    "priority": state.config.priority,
+                }
+            )
+        return snapshot
+
     async def dispatch(
         self,
         request: Request,
@@ -281,6 +363,17 @@ class ProxyEngine:
         auth_header_name, auth_value_prefix = _determine_auth_header(request.headers)
         cleaned_headers = _clean_headers(request.headers, skip={auth_header_name})
         query_items = list(request.query_params.multi_items())
+        streaming_requested = _is_streaming_request(body_bytes, request.headers, query_items)
+        timeout_value = self._config.preferences.model_timeout
+        if streaming_requested:
+            request_timeout = httpx.Timeout(
+                connect=timeout_value,
+                read=None,
+                write=timeout_value,
+                pool=timeout_value,
+            )
+        else:
+            request_timeout = httpx.Timeout(timeout_value)
         failures: list[str] = []
 
         for state in candidates:
@@ -290,7 +383,7 @@ class ProxyEngine:
             headers[auth_header_name] = f"{auth_value_prefix}{provider.api_key}".strip()
             try:
                 logger.info(
-                    "Dispatching request %s %s to provider %s using model %s",
+                    "Dispatching request %s %s to 【%s】-【%s】",
                     request.method,
                     request.url.path,
                     provider.name,
@@ -302,6 +395,7 @@ class ProxyEngine:
                     headers=headers,
                     content=body_bytes if body_bytes else None,
                     params=query_items,
+                    timeout=request_timeout,
                 )
                 response = await client.send(upstream_request, stream=True)
             except httpx.RequestError as exc:
@@ -401,6 +495,10 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.middleware("http")
     async def _enforce_api_key(request: Request, call_next):
+        # Skip API key check for admin pages and static files
+        if request.url.path.startswith("/admin") or request.url.path.startswith("/static") or request.url.path == "/":
+            return await call_next(request)
+
         if engine.config.api_key:
             provided = _extract_api_key(request.headers)
             if provided != engine.config.api_key:
@@ -409,10 +507,14 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     def _build_model_entries(models_by_provider: dict[str, list[str]]) -> list[dict[str, object]]:
         entries: list[dict[str, object]] = []
+        seen: set[str] = set()
         for _, models in models_by_provider.items():
             for model_id in models:
                 if "*" in model_id or "?" in model_id:
                     continue
+                if model_id in seen:
+                    continue
+                seen.add(model_id)
                 entries.append({"id": model_id, "name": model_id})
         entries.sort(key=lambda item: str(item["id"]))
         return entries
@@ -422,6 +524,112 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
         models_by_provider = await engine.pool.list_models()
         entries = _build_model_entries(models_by_provider)
         return {"data": entries}
+
+    # Admin endpoints
+    @app.get("/")
+    async def admin_index():
+        static_dir = Path(__file__).parent / "static"
+        index_file = static_dir / "index.html"
+        if not index_file.exists():
+            raise HTTPException(status_code=404, detail="Admin page not found")
+        return FileResponse(index_file)
+
+    # Mount static files
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.get("/admin/config")
+    async def get_config(request: Request):
+        # Verify API key for admin access
+        provided_key = _extract_api_key(request.headers)
+        if not provided_key or provided_key != engine.config.api_key:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+        # Read current config file
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="Config file not found")
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f)
+            return config_data
+        except Exception as exc:
+            logger.error("Failed to read config file: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to read config file")
+
+    @app.post("/admin/config")
+    async def update_config(request: Request):
+        # Verify API key for admin access
+        provided_key = _extract_api_key(request.headers)
+        if not provided_key or provided_key != engine.config.api_key:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+        try:
+            new_config_data = await request.json()
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        # Validate required fields
+        if "api_key" not in new_config_data:
+            raise HTTPException(status_code=400, detail="api_key is required")
+
+        if "providers" not in new_config_data or not isinstance(new_config_data["providers"], list):
+            raise HTTPException(status_code=400, detail="providers must be a non-empty list")
+
+        if len(new_config_data["providers"]) == 0:
+            raise HTTPException(status_code=400, detail="At least one provider is required")
+
+        # Validate each provider
+        for idx, provider in enumerate(new_config_data["providers"]):
+            if not isinstance(provider, dict):
+                raise HTTPException(status_code=400, detail=f"Provider at index {idx} must be an object")
+
+            required_fields = ["provider", "base_url", "api_key"]
+            for field in required_fields:
+                if field not in provider or not provider[field]:
+                    raise HTTPException(status_code=400, detail=f"Provider at index {idx} missing required field: {field}")
+
+        # Write to config file
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(
+                    new_config_data,
+                    f,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+
+            logger.info("Configuration updated via admin interface")
+            try:
+                updated_config = load_config(config_path)
+            except ConfigError as exc:
+                logger.error("Config written but failed to reload: %s", exc)
+                raise HTTPException(status_code=500, detail="Configuration saved but failed to reload")
+
+            await engine._apply_new_config(updated_config)
+            engine._config_mtime = engine._current_config_mtime()
+
+            return {"status": "success", "message": "Configuration saved successfully"}
+
+        except Exception as exc:
+            logger.error("Failed to write config file: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to write config file")
+
+    @app.get("/admin/providers/status")
+    async def provider_status(request: Request):
+        provided_key = _extract_api_key(request.headers)
+        if not provided_key or provided_key != engine.config.api_key:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+        try:
+            snapshot = await engine.provider_status_snapshot()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to build provider status snapshot: %s", exc)
+            raise HTTPException(status_code=500, detail="Failed to read provider status")
+
+        return {"providers": snapshot}
 
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     async def universal_proxy(full_path: str, request: Request) -> Response:

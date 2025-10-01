@@ -7,6 +7,28 @@ from typing import List, Optional
 import yaml
 
 
+_BOOLEAN_TRUE = {"true", "yes", "1", "on"}
+_BOOLEAN_FALSE = {"false", "no", "0", "off"}
+
+
+def _coerce_bool(value, *, field: str, provider: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _BOOLEAN_TRUE:
+            return True
+        if normalized in _BOOLEAN_FALSE:
+            return False
+    raise ConfigError(
+        f"Provider {field} for {provider} must be a boolean or boolean-like value"
+    )
+
+
 @dataclass(frozen=True)
 class ProviderConfig:
     name: str
@@ -15,6 +37,7 @@ class ProviderConfig:
     priority: int = 0
     models: Optional[List[str]] = None
     models_endpoint: str = "/v1/models"
+    enabled: bool = True
 
     def normalized_base_url(self) -> str:
         return self.base_url.rstrip("/")
@@ -110,6 +133,10 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
             raise ConfigError(f"Provider models_endpoint for {name} must be a non-empty string")
         models_endpoint = models_endpoint_raw.strip()
 
+        enabled = _coerce_bool(
+            entry.get("enabled"), field="enabled", provider=name, default=True
+        )
+
         providers.append(
             ProviderConfig(
                 name=name,
@@ -118,6 +145,7 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
                 priority=priority,
                 models=models,
                 models_endpoint=models_endpoint,
+                enabled=enabled,
             )
         )
 

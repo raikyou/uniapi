@@ -73,6 +73,8 @@ class ProviderPool:
         async with self._lock:
             listing: dict[str, list[str]] = {}
             for state in self._states:
+                if not state.config.enabled:
+                    continue
                 patterns = state.model_patterns if state.model_patterns else ["*"]
                 listing[state.config.name] = list(patterns)
             return listing
@@ -107,7 +109,7 @@ class ProviderPool:
         assert self._client is not None
         tasks = []
         for state in self._states:
-            if state.model_patterns:
+            if state.model_patterns or not state.config.enabled:
                 continue
             tasks.append(self._fetch_models_for_state(state))
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -171,35 +173,32 @@ class ProviderPool:
         available = [
             state
             for state in self._states
-            if not state.is_on_cooldown(now) and state.supports_model(model)
+            if state.config.enabled and not state.is_on_cooldown(now) and state.supports_model(model)
         ]
         if not available:
             return []
 
-        # priority sort desc; randomize within same priority
-        grouped = {}
-        for state in available:
-            grouped.setdefault(state.config.priority, []).append(state)
-
-        sorted_candidates: List[ProviderState] = []
-        for priority in sorted(grouped.keys(), reverse=True):
-            bucket = grouped[priority]
-            random.shuffle(bucket)
-            sorted_candidates.extend(bucket)
-        return sorted_candidates
+        # Keep only the highest priority providers; shuffle to balance within the tier
+        highest_priority = max(state.config.priority for state in available)
+        top_candidates = [
+            state for state in available if state.config.priority == highest_priority
+        ]
+        random.shuffle(top_candidates)
+        return top_candidates
 
     def candidates_for_any(self) -> List[ProviderState]:
         now = datetime.now(timezone.utc)
         available = [state for state in self._states if not state.is_on_cooldown(now)]
-        grouped = {}
-        for state in available:
-            grouped.setdefault(state.config.priority, []).append(state)
-        ordered: List[ProviderState] = []
-        for priority in sorted(grouped.keys(), reverse=True):
-            bucket = grouped[priority]
-            random.shuffle(bucket)
-            ordered.extend(bucket)
-        return ordered
+        available = [state for state in available if state.config.enabled]
+        if not available:
+            return []
+
+        highest_priority = max(state.config.priority for state in available)
+        top_candidates = [
+            state for state in available if state.config.priority == highest_priority
+        ]
+        random.shuffle(top_candidates)
+        return top_candidates
 
     def mark_failure(self, state: ProviderState, reason: str) -> None:
         state.begin_cooldown(self.preferences, reason)
@@ -215,11 +214,3 @@ class ProviderPool:
     @property
     def states(self) -> List[ProviderState]:
         return list(self._states)
-
-
-class ProviderRequestError(Exception):
-    def __init__(self, provider: ProviderConfig, message: str, *, status_code: Optional[int] = None):
-        super().__init__(message)
-        self.provider = provider
-        self.status_code = status_code
-        self.message = message

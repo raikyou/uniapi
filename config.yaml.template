@@ -4,6 +4,7 @@ providers:
     base_url: https://api.openai.com # 后端服务的API地址
     api_key: sk-YgS6GTi0b4bEabc4C # 提供商的API Key
     priority: 0 # 数字越大，优先级越高
+    enabled: true # 选填，设置为 false 时手动禁用该 provider，默认启用
     models_endpoint: /v1/models # 选填，未配置 model 列表时将通过此端点向上游请求模型列表，默认 /v1/models
     model: # 选填，如果不配置 model，会自动通过 models_endpoint 指定的端点获取可用的所有模型
       - gpt-4o # 可以使用的模型名称

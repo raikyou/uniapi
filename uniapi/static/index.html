@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UniAPI 配置管理</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            color: #2d3748;
+            font-size: 15px;
+            line-height: 1.4;
+            overflow: hidden;
+        }
+        .container {
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .login-card {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 20px;
+            box-shadow: 0 20px 50px rgba(50, 56, 73, 0.2);
+            padding: 40px 50px;
+            max-width: 500px;
+            width: 100%;
+        }
+        .main-card {
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 20px;
+            box-shadow: 0 20px 50px rgba(50, 56, 73, 0.2);
+            padding: 32px 40px;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        h1 {
+            color: #1a202c;
+            margin-bottom: 24px;
+            font-size: 32px;
+            font-weight: 700;
+        }
+        h2 {
+            color: #1a202c;
+            margin-bottom: 18px;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .form-group {
+            margin-bottom: 18px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #4a5568;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        input[type="text"], input[type="password"], textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.25s, box-shadow 0.25s;
+        }
+        input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.25);
+        }
+        textarea {
+            min-height: 100px;
+            font-family: 'Courier New', monospace;
+            resize: vertical;
+            line-height: 1.4;
+        }
+        .btn {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 25px rgba(59, 130, 246, 0.2);
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #5a67d8;
+        }
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #38a169;
+        }
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #e53e3e;
+        }
+        .btn-secondary {
+            background: #718096;
+            color: white;
+        }
+        .btn-secondary:hover {
+            background: #4a5568;
+        }
+        .hidden {
+            display: none !important;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            gap: 24px;
+            flex-shrink: 0;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 32px;
+            flex: 1;
+            min-width: 0;
+        }
+        .header-prefs {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 20px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 10px;
+            font-size: 14px;
+            color: #4a5568;
+            flex-wrap: wrap;
+        }
+        .header-prefs-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .header-prefs-item strong {
+            color: #2d3748;
+            font-weight: 600;
+        }
+        .header-prefs-divider {
+            width: 1px;
+            height: 16px;
+            background: #cbd5e0;
+        }
+        .main-content {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 0;
+        }
+        .config-section {
+            margin-bottom: 32px;
+        }
+        .config-section:last-child {
+            margin-bottom: 0;
+        }
+
+        /* Toast 提示 */
+        .toast {
+            position: fixed;
+            top: 24px;
+            right: 24px;
+            padding: 16px 24px;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 500;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            z-index: 2000;
+            opacity: 0;
+            transform: translateX(400px);
+            transition: opacity 0.3s, transform 0.3s;
+            max-width: 400px;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        .toast-error {
+            background: #fed7d7;
+            color: #c53030;
+            border: 1px solid #feb2b2;
+        }
+        .toast-success {
+            background: #c6f6d5;
+            color: #276749;
+            border: 1px solid #68d391;
+        }
+
+        /* 表格样式 */
+        .table-wrapper {
+            width: 100%;
+            overflow-x: auto;
+        }
+        .providers-table {
+            width: 100%;
+            min-width: 1000px;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(79, 114, 205, 0.15);
+        }
+        .providers-table thead {
+            background: #f7fafc;
+        }
+        .providers-table th {
+            padding: 16px 20px;
+            text-align: left;
+            font-weight: 700;
+            color: #2d3748;
+            font-size: 14px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        .providers-table td {
+            padding: 14px 20px;
+            border-bottom: 1px solid #edf2f7;
+            color: #4a5568;
+            font-size: 15px;
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+        .providers-table tbody tr:hover {
+            background: #f8fafc;
+        }
+        .providers-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .provider-name {
+            cursor: pointer;
+            padding: 4px 8px;
+            margin: -4px -8px;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        .provider-name:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .provider-actions {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+        .action-link {
+            font-size: 14px;
+            cursor: pointer;
+            text-decoration: none;
+            transition: color 0.2s, opacity 0.2s;
+            padding: 4px 0;
+        }
+        .action-link.edit {
+            color: #3b82f6;
+        }
+        .action-link.edit:hover {
+            color: #2563eb;
+        }
+        .action-link.danger {
+            color: #ef4444;
+        }
+        .action-link.danger:hover {
+            color: #dc2626;
+        }
+        .copy-wrapper {
+            cursor: pointer;
+            display: inline-block;
+            padding: 4px 8px;
+            margin: -4px -8px;
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+        .copy-wrapper:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .copy-wrapper span {
+            display: inline-block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .copyable {
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .copyable:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .model-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .model-tag {
+            background: rgba(102, 126, 234, 0.2);
+            color: #4c51bf;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+        .model-tag:hover {
+            background: rgba(102, 126, 234, 0.35);
+            transform: translateY(-1px);
+        }
+        .status-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .status-enabled {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+        .status-disabled {
+            background: #fed7d7;
+            color: #822727;
+        }
+        .status-auto {
+            background: #feebc8;
+            color: #7b341e;
+        }
+        .status-detail {
+            font-size: 12px;
+            color: #718096;
+            max-width: 200px;
+            white-space: normal;
+            line-height: 1.4;
+        }
+
+        /* Preferences 卡片样式 */
+        .config-item {
+            background: #f7fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 28px;
+            transition: box-shadow 0.2s;
+        }
+        .config-item:hover {
+            box-shadow: 0 16px 30px rgba(102, 126, 234, 0.15);
+        }
+        .config-item-body {
+            color: #4a5568;
+            font-size: 15px;
+            line-height: 1.5;
+        }
+        .config-item-body div {
+            margin-bottom: 10px;
+        }
+        .config-item-body strong {
+            color: #2d3748;
+            font-weight: 700;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(15, 23, 42, 0.55);
+            z-index: 1000;
+        }
+        .modal.show {
+            display: block;
+        }
+        .modal-content {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 480px;
+            max-width: 90vw;
+            background: white;
+            overflow-y: auto;
+            box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
+            transform: translateX(100%);
+            transition: transform 0.3s ease-out;
+            padding: 32px 28px;
+        }
+        .modal.show .modal-content {
+            transform: translateX(0);
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .modal-header h2 {
+            margin-bottom: 0;
+            font-size: 18px;
+        }
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #a0aec0;
+            transition: color 0.2s;
+            line-height: 1;
+            padding: 4px;
+        }
+        .modal-close:hover {
+            color: #4a5568;
+        }
+
+        .form-checkbox label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .form-checkbox input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+        .form-helper {
+            margin-top: 6px;
+            font-size: 12px;
+            color: #718096;
+            line-height: 1.5;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #718096;
+            padding: 50px 24px;
+            border: 2px dashed #cbd5f5;
+            border-radius: 14px;
+            background: rgba(237, 242, 247, 0.7);
+            font-size: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 登录界面 -->
+        <div id="loginView" class="login-card">
+            <h1>UniAPI 配置管理</h1>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="apiKey">请输入 API Key</label>
+                    <input type="password" id="apiKey" placeholder="输入您的 API Key" required>
+                </div>
+                <button type="submit" class="btn btn-primary">登录</button>
+            </form>
+        </div>
+
+        <!-- 主界面 -->
+        <div id="mainView" class="main-card hidden">
+            <div class="header">
+                <div class="header-left">
+                    <h1>配置管理</h1>
+                    <div class="header-prefs" id="headerPrefsView">
+                        <div class="header-prefs-item">
+                            <strong>Timeout:</strong>
+                            <span>20s</span>
+                        </div>
+                        <div class="header-prefs-divider"></div>
+                        <div class="header-prefs-item">
+                            <strong>Cooldown:</strong>
+                            <span>300s</span>
+                        </div>
+                        <div class="header-prefs-divider"></div>
+                        <div class="header-prefs-item">
+                            <strong>Proxy:</strong>
+                            <span>未设置</span>
+                        </div>
+                        <a class="action-link edit" onclick="openPreferencesModal()" title="编辑 Preferences" style="margin-left: 8px;">编辑</a>
+                    </div>
+                </div>
+                <button id="logoutBtn" class="btn btn-secondary">退出登录</button>
+            </div>
+
+            <div class="main-content">
+                <!-- Providers 配置 -->
+                <div class="config-section">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+                        <h2>Providers 配置</h2>
+                        <button id="addProviderBtn" class="btn btn-success">添加 Provider</button>
+                    </div>
+                    <div class="table-wrapper">
+                        <div id="providersList"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Provider 编辑模态框 -->
+    <div id="providerModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="providerModalTitle">编辑 Provider</h2>
+                <button class="modal-close" onclick="closeProviderModal()">&times;</button>
+            </div>
+            <form id="providerForm">
+                <div class="form-group">
+                    <label for="providerName">名称 *</label>
+                    <input type="text" id="providerName" required>
+                </div>
+                <div class="form-group">
+                    <label for="providerBaseUrl">Base URL *</label>
+                    <input type="text" id="providerBaseUrl" placeholder="https://api.example.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="providerApiKey">API Key *</label>
+                    <input type="password" id="providerApiKey" required>
+                </div>
+                <div class="form-group">
+                    <label for="providerPriority">优先级</label>
+                    <input type="text" id="providerPriority" value="0">
+                </div>
+                <div class="form-group">
+                    <label for="providerModels">Models（每行一个模型名称）</label>
+                    <textarea id="providerModels" placeholder="gpt-4&#10;gpt-3.5-turbo"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="providerModelsEndpoint">Models Endpoint</label>
+                    <input type="text" id="providerModelsEndpoint" value="/v1/models">
+                </div>
+                <div class="form-group form-checkbox">
+                    <label for="providerEnabled">
+                        <input type="checkbox" id="providerEnabled" checked>
+                        启用 Provider
+                    </label>
+                    <div class="form-helper">取消勾选后，该 Provider 将不会参与请求调度。</div>
+                </div>
+                <div style="display: flex; gap: 12px; margin-top: 8px; padding-top: 24px; border-top: 1px solid #e2e8f0;">
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">保存</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeProviderModal()" style="flex: 1;">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Preferences 编辑模态框 -->
+    <div id="preferencesModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>编辑 Preferences</h2>
+                <button class="modal-close" onclick="closePreferencesModal()">&times;</button>
+            </div>
+            <form id="preferencesForm">
+                <div class="form-group">
+                    <label for="modelTimeout">Model Timeout（秒）</label>
+                    <input type="text" id="modelTimeout" value="20.0">
+                </div>
+                <div class="form-group">
+                    <label for="cooldownPeriod">Cooldown Period（秒）</label>
+                    <input type="text" id="cooldownPeriod" value="300.0">
+                </div>
+                <div class="form-group">
+                    <label for="proxy">Proxy（可选）</label>
+                    <input type="text" id="proxy" placeholder="http://proxy.example.com:8080">
+                </div>
+                <div style="display: flex; gap: 12px; margin-top: 8px; padding-top: 24px; border-top: 1px solid #e2e8f0;">
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">保存</button>
+                    <button type="button" class="btn btn-secondary" onclick="closePreferencesModal()" style="flex: 1;">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
