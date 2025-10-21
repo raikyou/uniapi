@@ -26,9 +26,10 @@ const STATUS_POLL_INTERVAL = 10000;
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', function() {
     // 检查是否已登录
-    const savedApiKey = sessionStorage.getItem('apiKey');
+    const savedApiKey = localStorage.getItem('apiKey') || sessionStorage.getItem('apiKey');
     if (savedApiKey) {
         apiKey = savedApiKey;
+        sessionStorage.setItem('apiKey', savedApiKey);
         login();
     }
 
@@ -53,6 +54,7 @@ async function handleLogin(e) {
     if (!key) return;
 
     apiKey = key;
+    localStorage.setItem('apiKey', key);
     sessionStorage.setItem('apiKey', key);
     await login();
 }
@@ -84,6 +86,7 @@ function handleLogout() {
     configData = null;
     providerStatusMap = {};
     stopStatusPolling();
+    localStorage.removeItem('apiKey');
     sessionStorage.removeItem('apiKey');
 
     document.getElementById('loginView').classList.remove('hidden');
