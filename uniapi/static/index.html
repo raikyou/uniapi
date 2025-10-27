@@ -742,6 +742,7 @@
             border-bottom: 1px solid var(--border-light);
             cursor: pointer;
             transition: all 0.2s;
+            width: 100%;
         }
 
         .model-item:hover {
@@ -750,6 +751,46 @@
 
         .model-item:last-child {
             border-bottom: none;
+        }
+
+        .model-item input[type="checkbox"] {
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+
+        .model-item .btn {
+            flex-shrink: 0;
+            margin-left: auto;
+        }
+
+        .model-item-wrapper {
+            transition: all 0.2s;
+        }
+
+        .model-item-wrapper.has-mapping {
+            background: rgba(99, 102, 241, 0.03);
+        }
+
+        .mapping-input-container {
+            animation: slideDown 0.2s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .tag {
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
     </style>
 </head>

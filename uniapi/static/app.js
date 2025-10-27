@@ -19,6 +19,7 @@ let providerModelsState = {
     models: [],
     selected: new Set(),
     filter: '',
+    mappings: {}, // 客户端模型名 -> 服务商模型名的映射
 };
 
 const STATUS_POLL_INTERVAL = 10000;
@@ -261,9 +262,15 @@ function renderProviders() {
                             <td>
                                 ${provider.model ? `
                                     <div style="display: flex; flex-wrap: wrap; gap: 8px; max-width: 450px;">
-                                        ${provider.model.map(m => `
-                                            <span class="tag" data-copy-text="${escapeHtml(m)}" title="点击复制">${escapeHtml(m)}</span>
-                                        `).join('')}
+                                        ${provider.model.map(m => {
+                                            if (typeof m === 'string') {
+                                                return `<span class="tag" data-copy-text="${escapeHtml(m)}" title="点击复制">${escapeHtml(m)}</span>`;
+                                            } else if (typeof m === 'object' && m !== null) {
+                                                const [clientModel, providerModel] = Object.entries(m)[0] || ['', ''];
+                                                return `<span class="tag" data-copy-text="${escapeHtml(clientModel)}" title="点击复制 · 映射到: ${escapeHtml(providerModel)}">${escapeHtml(clientModel)}</span>`;
+                                            }
+                                            return '';
+                                        }).join('')}
                                     </div>
                                 ` : '<span class="text-muted">-</span>'}
                             </td>
@@ -343,10 +350,27 @@ function openProviderModal(index = -1, section = 'info') {
         document.getElementById('providerModelsEndpoint').value = provider.models_endpoint || '/v1/models';
 
         const initial = Array.isArray(provider.model) ? [...provider.model] : [];
+        const mappings = {};
+        const selectedModels = [];
+        
+        // 解析模型列表，支持字符串和字典格式
+        initial.forEach(item => {
+            if (typeof item === 'string') {
+                selectedModels.push(item);
+            } else if (typeof item === 'object' && item !== null) {
+                // 字典格式: { "client-model": "provider-model" }
+                Object.entries(item).forEach(([clientModel, providerModel]) => {
+                    selectedModels.push(clientModel);
+                    mappings[clientModel] = providerModel;
+                });
+            }
+        });
+        
         providerModelsState = {
-            models: [...initial],
-            selected: new Set(initial),
+            models: [...selectedModels],
+            selected: new Set(selectedModels),
             filter: '',
+            mappings,
         };
         renderProviderModelsUI();
     } else {
@@ -354,7 +378,7 @@ function openProviderModal(index = -1, section = 'info') {
         document.getElementById('providerForm').reset();
         document.getElementById('providerPriority').value = '0';
         document.getElementById('providerModelsEndpoint').value = '/v1/models';
-        providerModelsState = { models: [], selected: new Set(), filter: '' };
+        providerModelsState = { models: [], selected: new Set(), filter: '', mappings: {} };
         renderProviderModelsUI();
     }
 
@@ -371,7 +395,7 @@ function openProviderModal(index = -1, section = 'info') {
 function closeProviderModal() {
     document.getElementById('providerModal').classList.remove('show');
     editingProviderIndex = -1;
-    providerModelsState = { models: [], selected: new Set(), filter: '' };
+    providerModelsState = { models: [], selected: new Set(), filter: '', mappings: {} };
 }
 
 async function handleSaveProvider(e) {
@@ -385,7 +409,19 @@ async function handleSaveProvider(e) {
     };
 
     const selectedModels = Array.from(providerModelsState.selected || []);
-    if (selectedModels.length > 0) provider.model = selectedModels;
+    const mappings = providerModelsState.mappings || {};
+    
+    if (selectedModels.length > 0) {
+        provider.model = selectedModels.map(clientModel => {
+            const providerModel = mappings[clientModel];
+            if (providerModel && providerModel !== clientModel) {
+                // 有映射，返回字典格式
+                return { [clientModel]: providerModel };
+            }
+            // 无映射，返回字符串
+            return clientModel;
+        });
+    }
 
     const modelsEndpoint = document.getElementById('providerModelsEndpoint').value.trim();
     if (modelsEndpoint && modelsEndpoint !== '/v1/models') {
@@ -563,6 +599,7 @@ function renderProviderModelsUI() {
     const selectedCountEl = document.getElementById('modelsSelectedCount');
     const models = Array.isArray(providerModelsState.models) ? providerModelsState.models : [];
     const selected = providerModelsState.selected || new Set();
+    const mappings = providerModelsState.mappings || {};
     const filter = (providerModelsState.filter || '').toLowerCase();
 
     if (!listEl) return;
@@ -577,11 +614,38 @@ function renderProviderModelsUI() {
         listEl.innerHTML = visible.map((m, i) => {
             const id = `mdl_${i}`;
             const checked = selected.has(m) ? 'checked' : '';
+            const mappedValue = mappings[m] || '';
+            const hasMappingClass = mappedValue ? ' has-mapping' : '';
+            
             return `
-            <label class="model-item" for="${id}">
-                <input type="checkbox" id="${id}" data-model="${escapeHtml(m)}" ${checked}>
-                <span>${escapeHtml(m)}</span>
-            </label>`;
+            <div class="model-item-wrapper${hasMappingClass}" style="border-bottom: 1px solid var(--border-light);">
+                <div class="model-item" style="border-bottom: none; display: flex; align-items: center; gap: 12px; padding: 10px 16px;">
+                    <input type="checkbox" id="${id}" data-model="${escapeHtml(m)}" ${checked} style="cursor: pointer;">
+                    <label for="${id}" style="flex: 1; cursor: pointer; margin: 0;">
+                        <div style="font-weight: 500;">${escapeHtml(m)}</div>
+                        ${mappedValue ? `<div style="font-size: 12px; color: var(--text-tertiary); margin-top: 2px;">→ ${escapeHtml(mappedValue)}</div>` : ''}
+                    </label>
+                    <button type="button" class="btn btn-ghost btn-icon" onclick="toggleModelMapping('${escapeHtml(m)}')" title="${mappedValue ? '编辑映射' : '添加映射'}" style="padding: 6px; font-size: 16px; min-width: 32px; height: 32px;">
+                        ${mappedValue ? '✏️' : '➕'}
+                    </button>
+                </div>
+                <div id="mapping_input_${i}" class="mapping-input-container" style="display: none; padding: 8px 16px 12px 40px; background: var(--bg-secondary);">
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" 
+                            class="form-input" 
+                            placeholder="输入服务商模型名..." 
+                            value="${escapeHtml(mappedValue)}" 
+                            onkeydown="if(event.key==='Enter'){event.preventDefault();saveModelMapping('${escapeHtml(m)}',this.value,${i});}"
+                            style="flex: 1; padding: 6px 10px; font-size: 13px;">
+                        <button type="button" class="btn btn-success btn-icon" onclick="saveModelMapping('${escapeHtml(m)}',this.previousElementSibling.value,${i})" title="保存映射" style="padding: 6px 10px;">
+                            ✓
+                        </button>
+                        <button type="button" class="btn btn-danger btn-icon" onclick="removeModelMapping('${escapeHtml(m)}',${i})" title="删除映射" style="padding: 6px 10px;">
+                            ✕
+                        </button>
+                    </div>
+                </div>
+            </div>`;
         }).join('');
     }
 
@@ -625,7 +689,79 @@ function addCustomModel() {
     providerModelsState.selected.add(value);
     input.value = '';
     renderProviderModelsUI();
-    showSuccess('已添加自定义模型');
+    showSuccess(`已添加自定义模型: ${value}`);
+}
+
+function toggleModelMapping(clientModel) {
+    const models = Array.isArray(providerModelsState.models) ? providerModelsState.models : [];
+    const filter = (providerModelsState.filter || '').toLowerCase();
+    const visible = filter ? models.filter(m => m.toLowerCase().includes(filter)) : models;
+    const index = visible.indexOf(clientModel);
+    
+    if (index === -1) return;
+    
+    const inputContainer = document.getElementById(`mapping_input_${index}`);
+    if (!inputContainer) return;
+    
+    // 关闭其他所有打开的映射输入框
+    document.querySelectorAll('.mapping-input-container').forEach(el => {
+        if (el !== inputContainer) {
+            el.style.display = 'none';
+        }
+    });
+    
+    // 切换当前输入框
+    const isVisible = inputContainer.style.display !== 'none';
+    inputContainer.style.display = isVisible ? 'none' : 'block';
+    
+    // 如果打开，聚焦到输入框
+    if (!isVisible) {
+        const input = inputContainer.querySelector('input[type="text"]');
+        if (input) {
+            setTimeout(() => input.focus(), 50);
+        }
+    }
+}
+
+function saveModelMapping(clientModel, providerModel, index) {
+    const trimmedValue = providerModel.trim();
+    
+    if (!trimmedValue) {
+        showError('服务商模型名不能为空');
+        return;
+    }
+    
+    if (!providerModelsState.mappings) {
+        providerModelsState.mappings = {};
+    }
+    
+    providerModelsState.mappings[clientModel] = trimmedValue;
+    
+    // 隐藏输入框
+    const inputContainer = document.getElementById(`mapping_input_${index}`);
+    if (inputContainer) {
+        inputContainer.style.display = 'none';
+    }
+    
+    renderProviderModelsUI();
+    showSuccess(`已设置映射: ${clientModel} → ${trimmedValue}`);
+}
+
+function removeModelMapping(clientModel, index) {
+    if (!providerModelsState.mappings) {
+        providerModelsState.mappings = {};
+    }
+    
+    delete providerModelsState.mappings[clientModel];
+    
+    // 隐藏输入框
+    const inputContainer = document.getElementById(`mapping_input_${index}`);
+    if (inputContainer) {
+        inputContainer.style.display = 'none';
+    }
+    
+    renderProviderModelsUI();
+    showSuccess(`已删除映射: ${clientModel}`);
 }
 
 // ==================== 状态轮询 ====================

@@ -27,9 +27,16 @@ class ProviderState:
         return self.cooldown_until is not None and now < self.cooldown_until
 
     def supports_model(self, model: str) -> bool:
+        if self.config.model_mapping and model in self.config.model_mapping:
+            return True
         if not self.model_patterns:
             return True
         return any(_match_model_pattern(model, pattern) for pattern in self.model_patterns)
+
+    def get_provider_model(self, client_model: str) -> str:
+        if self.config.model_mapping and client_model in self.config.model_mapping:
+            return self.config.model_mapping[client_model]
+        return client_model
 
     def begin_cooldown(self, preferences: PreferencesConfig, reason: str) -> None:
         seconds = preferences.cooldown_period

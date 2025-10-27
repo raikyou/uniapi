@@ -436,20 +436,43 @@ class ProxyEngine:
             url = f"{provider.normalized_base_url()}/{request.url.path.lstrip('/')}"
             headers = dict(cleaned_headers)
             headers[auth_header_name] = f"{auth_value_prefix}{provider.api_key}".strip()
+
+            provider_model = state.get_provider_model(model) if model else None
+            modified_body = body_bytes
+            modified_query = query_items
+
+            if model and provider_model != model:
+                if body_bytes:
+                    try:
+                        payload = json.loads(body_bytes)
+                        if isinstance(payload, dict) and "model" in payload:
+                            payload["model"] = provider_model
+                            modified_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+
+                modified_query = []
+                for key, value in query_items:
+                    if key.lower() == "model":
+                        modified_query.append((key, provider_model))
+                    else:
+                        modified_query.append((key, value))
+
             try:
                 logger.info(
-                    "Dispatching request %s %s to 【%s】-【%s】",
+                    "%s %s to 【%s】-【%s】%s",
                     request.method,
                     request.url.path,
                     provider.name,
-                    model or "<unspecified>"
+                    model or "<unspecified>",
+                    f" (mapped to {provider_model})" if model and provider_model != model else ""
                 )
                 upstream_request = client.build_request(
                     request.method,
                     url,
                     headers=headers,
-                    content=body_bytes if body_bytes else None,
-                    params=query_items,
+                    content=modified_body if modified_body else None,
+                    params=modified_query,
                     timeout=request_timeout,
                 )
                 response = await client.send(upstream_request, stream=True)

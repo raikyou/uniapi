@@ -9,6 +9,7 @@ providers:
     model: # 选填，如果不配置 model，会自动通过 models_endpoint 指定的端点获取可用的所有模型
       - gpt-4o # 可以使用的模型名称
       - *gemini # 支持任意位置通配符，例如前缀 gemin* 或后缀 *gemini
+      - claude-3-5-sonnet: claude-3-5-sonnet-20240620 # 模型映射：客户端请求 claude-3-5-sonnet，实际请求服务商的 claude-3-5-sonnet-20240620
 
 api_key: sk-KjjI60Yd0JFWtxxxxxxxxxxxxxxwmRWpWpQRo
 

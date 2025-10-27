@@ -38,6 +38,7 @@ class ProviderConfig:
     models: Optional[List[str]] = None
     models_endpoint: str = "/v1/models"
     enabled: bool = True
+    model_mapping: dict[str, str] = field(default_factory=dict)
 
     def normalized_base_url(self) -> str:
         return self.base_url.rstrip("/")
@@ -113,20 +114,42 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
             raise ConfigError(f"Provider priority for {name} must be an integer")
 
         models_raw = entry.get("model")
-        if models_raw is None:
-            models = None
-        else:
+        models = None
+        model_mapping: dict[str, str] = {}
+        
+        if models_raw is not None:
             if not isinstance(models_raw, list) or not models_raw:
                 raise ConfigError(
                     f"Provider models for {name} must be a non-empty list of model identifiers"
                 )
             models = []
             for model_value in models_raw:
-                if not isinstance(model_value, str) or not model_value:
+                if isinstance(model_value, str):
+                    if not model_value:
+                        raise ConfigError(
+                            f"Provider model value for {name} must be a non-empty string"
+                        )
+                    models.append(model_value)
+                elif isinstance(model_value, dict):
+                    if len(model_value) != 1:
+                        raise ConfigError(
+                            f"Provider model mapping for {name} must have exactly one key-value pair"
+                        )
+                    client_model, provider_model = next(iter(model_value.items()))
+                    if not isinstance(client_model, str) or not client_model:
+                        raise ConfigError(
+                            f"Provider model mapping key for {name} must be a non-empty string"
+                        )
+                    if not isinstance(provider_model, str) or not provider_model:
+                        raise ConfigError(
+                            f"Provider model mapping value for {name} must be a non-empty string"
+                        )
+                    models.append(client_model)
+                    model_mapping[client_model] = provider_model
+                else:
                     raise ConfigError(
-                        f"Provider model value for {name} must be a non-empty string"
+                        f"Provider model value for {name} must be a string or a mapping"
                     )
-                models.append(model_value)
 
         models_endpoint_raw = entry.get("models_endpoint", "/v1/models")
         if not isinstance(models_endpoint_raw, str) or not models_endpoint_raw.strip():
@@ -146,6 +169,7 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
                 models=models,
                 models_endpoint=models_endpoint,
                 enabled=enabled,
+                model_mapping=model_mapping,
             )
         )
 
