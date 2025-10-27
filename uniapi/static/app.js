@@ -204,8 +204,13 @@ async function saveConfig() {
         const refreshed = await fetchConfigFromServer({ silent: true });
         if (refreshed.success && refreshed.data) {
             configData = refreshed.data;
+            console.log('[saveConfig] Config refreshed from server');
+            if (editingProviderIndex >= 0 && configData.providers[editingProviderIndex]) {
+                console.log('[saveConfig] Refreshed provider model:', configData.providers[editingProviderIndex].model);
+            }
         } else {
             configData.providers = orderedProviders;
+            console.warn('[saveConfig] Failed to refresh, using local data');
         }
 
         renderProviders();
@@ -441,17 +446,21 @@ async function handleSaveProvider(e) {
     const selectedModels = Array.from(providerModelsState.selected || []);
     const mappings = providerModelsState.mappings || {};
     
-    if (selectedModels.length > 0) {
-        provider.model = selectedModels.map(clientModel => {
-            const providerModel = mappings[clientModel];
-            if (providerModel && providerModel !== clientModel) {
-                // 有映射，返回字典格式
-                return { [clientModel]: providerModel };
-            }
-            // 无映射，返回字符串
-            return clientModel;
-        });
-    }
+    console.log('[handleSaveProvider] providerModelsState.selected:', Array.from(providerModelsState.selected));
+    console.log('[handleSaveProvider] selectedModels:', selectedModels);
+    
+    // 始终设置 model 属性，即使为空数组，以确保取消勾选时能正确清除
+    provider.model = selectedModels.map(clientModel => {
+        const providerModel = mappings[clientModel];
+        if (providerModel && providerModel !== clientModel) {
+            // 有映射，返回字典格式
+            return { [clientModel]: providerModel };
+        }
+        // 无映射，返回字符串
+        return clientModel;
+    });
+    
+    console.log('[handleSaveProvider] provider.model:', provider.model);
 
     const modelsEndpoint = document.getElementById('providerModelsEndpoint').value.trim();
     if (modelsEndpoint && modelsEndpoint !== '/v1/models') {
@@ -459,8 +468,12 @@ async function handleSaveProvider(e) {
     }
 
     const normalizedProvider = formatProviderForSave(provider);
+    console.log('[handleSaveProvider] normalizedProvider:', JSON.stringify(normalizedProvider, null, 2));
     const isEdit = editingProviderIndex >= 0;
     const originalProvider = isEdit ? configData.providers[editingProviderIndex] : null;
+    if (originalProvider) {
+        console.log('[handleSaveProvider] originalProvider.model:', originalProvider.model);
+    }
 
     if (originalProvider && originalProvider.enabled === false) {
         normalizedProvider.enabled = false;
@@ -1056,17 +1069,22 @@ function handleGlobalChange(e) {
     const target = e.target;
     if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') return;
 
-    const parent = target.parentElement?.parentElement;
-    if (!parent || parent.id !== 'modelsList') return;
+    // 检查复选框是否在 modelsList 容器内
+    const modelsList = document.getElementById('modelsList');
+    if (!modelsList || !modelsList.contains(target)) return;
 
     const model = target.getAttribute('data-model');
     if (!model) return;
 
     if (target.checked) {
+        console.log('[handleGlobalChange] Adding model:', model);
         providerModelsState.selected.add(model);
     } else {
+        console.log('[handleGlobalChange] Removing model:', model);
         providerModelsState.selected.delete(model);
     }
+    
+    console.log('[handleGlobalChange] Current selected:', Array.from(providerModelsState.selected));
 
     renderProviderModelsUI();
 }
@@ -1147,8 +1165,13 @@ function formatProviderForSave(provider) {
         priority: priorityValue
     };
 
-    if (Array.isArray(provider.model) && provider.model.length > 0) {
-        normalized.model = provider.model.map(item => item);
+    // 处理模型配置：空数组表示清空模型列表，undefined 表示不修改（但保存时应该是完整替换）
+    if (Array.isArray(provider.model)) {
+        if (provider.model.length > 0) {
+            normalized.model = provider.model.map(item => item);
+        }
+        // 如果是空数组，不设置 model 字段，这样后端会清除该字段
+        // 后端应该做完整替换而不是合并
     }
 
     if (provider.models_endpoint && provider.models_endpoint !== '/v1/models') {
