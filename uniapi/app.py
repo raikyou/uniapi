@@ -573,8 +573,11 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
     @app.middleware("http")
     async def _enforce_api_key(request: Request, call_next):
-        # Skip API key check for admin pages and static files
-        if request.url.path.startswith("/admin") or request.url.path.startswith("/static") or request.url.path == "/":
+        # Skip API key check for admin pages, static files, and common browser requests
+        if (request.url.path.startswith("/admin") or 
+            request.url.path.startswith("/static") or 
+            request.url.path == "/" or
+            request.url.path == "/favicon.ico"):
             return await call_next(request)
 
         if engine.config.api_key:
@@ -611,6 +614,11 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
         if not index_file.exists():
             raise HTTPException(status_code=404, detail="Admin page not found")
         return FileResponse(index_file)
+
+    @app.get("/favicon.ico")
+    async def favicon():
+        from fastapi.responses import Response
+        return Response(status_code=204)
 
     # Mount static files
     static_dir = Path(__file__).parent / "static"

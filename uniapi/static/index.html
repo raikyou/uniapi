@@ -459,6 +459,81 @@
             background: #64748b;
         }
 
+        /* 日志浮层 */
+        .log-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .log-overlay.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 1;
+        }
+
+        .log-overlay-content {
+            background: var(--bg-primary);
+            border-radius: var(--radius-lg);
+            width: 90vw;
+            max-width: 1400px;
+            height: 85vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            transform: scale(0.95);
+            transition: transform 0.3s;
+        }
+
+        .log-overlay.show .log-overlay-content {
+            transform: scale(1);
+        }
+
+        .log-overlay-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .log-overlay-header h2 {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .log-overlay-controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .log-overlay-body {
+            flex: 1;
+            padding: 24px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .log-overlay .log-viewer {
+            flex: 1;
+            margin: 0;
+            height: auto;
+        }
+
         /* 模态框 */
         .modal {
             display: none;
@@ -837,7 +912,7 @@
             </div>
             <div style="display: flex; align-items: center; gap: 12px;">
                 <button class="btn btn-ghost" onclick="openPreferencesModal()" title="Preferences">⚙️</button>
-                <button class="btn btn-ghost" onclick="switchView('logs')" title="日志查看">📋</button>
+                <button class="btn btn-ghost" onclick="openLogOverlay()" title="日志查看">📋</button>
                 <button id="logoutBtn" class="btn btn-secondary">退出</button>
             </div>
         </header>
@@ -857,23 +932,7 @@
                     </div>
                 </div>
 
-                <!-- 日志视图 -->
-                <div id="logsView" class="view hidden">
-                    <div class="content-header">
-                        <h1 class="content-title">实时日志</h1>
-                        <div style="display: flex; gap: 12px;">
-                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                                <input type="checkbox" id="autoScrollToggle" checked>
-                                <span>自动滚动</span>
-                            </label>
-                            <button id="pauseLogsBtn" class="btn btn-secondary">暂停</button>
-                            <button id="clearLogsBtn" class="btn btn-danger">清空</button>
-                        </div>
-                    </div>
-                    <div class="content-body">
-                        <div id="logOutput" class="log-viewer"></div>
-                    </div>
-                </div>
+
             </section>
         </main>
     </div>
@@ -962,6 +1021,27 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-ghost" onclick="closePreferencesModal()">取消</button>
                 <button type="button" class="btn btn-primary" onclick="document.getElementById('preferencesForm').requestSubmit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 日志浮层 -->
+    <div id="logOverlay" class="log-overlay" onclick="closeLogOverlay(event)">
+        <div class="log-overlay-content" onclick="event.stopPropagation()">
+            <div class="log-overlay-header">
+                <h2>实时日志</h2>
+                <div class="log-overlay-controls">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="autoScrollToggle" checked>
+                        <span>自动滚动</span>
+                    </label>
+                    <button id="pauseLogsBtn" class="btn btn-secondary">暂停</button>
+                    <button id="clearLogsBtn" class="btn btn-danger">清空</button>
+                    <button class="btn btn-ghost" onclick="closeLogOverlay()" style="font-size: 20px; padding: 8px 12px;">&times;</button>
+                </div>
+            </div>
+            <div class="log-overlay-body">
+                <div id="logOutput" class="log-viewer"></div>
             </div>
         </div>
     </div>

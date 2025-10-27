@@ -28,10 +28,13 @@ const STATUS_POLL_INTERVAL = 10000;
 document.addEventListener('DOMContentLoaded', function() {
     // 检查是否已登录
     const savedApiKey = localStorage.getItem('apiKey') || sessionStorage.getItem('apiKey');
-    if (savedApiKey) {
-        apiKey = savedApiKey;
-        sessionStorage.setItem('apiKey', savedApiKey);
+    if (savedApiKey && savedApiKey.trim()) {
+        apiKey = savedApiKey.trim();
+        sessionStorage.setItem('apiKey', apiKey);
+        console.log('[Init] API Key loaded, length:', apiKey.length);
         login();
+    } else {
+        console.log('[Init] No API Key found');
     }
 
     // 绑定事件
@@ -48,15 +51,38 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('keydown', handleGlobalKeydown);
 });
 
+// 页面卸载时清理资源
+window.addEventListener('beforeunload', function() {
+    stopStatusPolling();
+    stopLogStream();
+});
+
+// 页面可见性变化时控制轮询
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+        // 页面隐藏时停止轮询和日志流
+        stopStatusPolling();
+        stopLogStream();
+    } else {
+        // 页面显示时恢复轮询（如果已登录）
+        if (apiKey && configData) {
+            startStatusPolling();
+            // 立即加载一次状态
+            loadProviderStatus({ silent: true });
+        }
+    }
+});
+
 // ==================== 登录/登出 ====================
 async function handleLogin(e) {
     e.preventDefault();
     const key = document.getElementById('apiKey').value.trim();
     if (!key) return;
 
-    apiKey = key;
-    localStorage.setItem('apiKey', key);
-    sessionStorage.setItem('apiKey', key);
+    apiKey = key.trim();
+    localStorage.setItem('apiKey', apiKey);
+    sessionStorage.setItem('apiKey', apiKey);
+    console.log('[Login] API Key set, length:', apiKey.length);
     await login();
 }
 
@@ -109,15 +135,15 @@ function switchView(viewName) {
     // 显示目标视图
     if (viewName === 'providers') {
         document.getElementById('providersView').classList.remove('hidden');
-    } else if (viewName === 'logs') {
-        document.getElementById('logsView').classList.remove('hidden');
-        initLogsView();
     }
 }
 
 // ==================== API 请求 ====================
 async function fetchConfigFromServer(options = {}) {
     const { silent = false } = options;
+    if (!apiKey) {
+        return { success: false, error: new Error('API Key 未设置') };
+    }
     try {
         const response = await fetch('/admin/config', {
             headers: { 'X-API-Key': apiKey }
@@ -139,6 +165,10 @@ async function fetchConfigFromServer(options = {}) {
 }
 
 async function saveConfig() {
+    if (!apiKey) {
+        showError('API Key 未设置，请先登录');
+        return false;
+    }
     try {
         const orderedProviders = Array.isArray(configData?.providers)
             ? configData.providers.map(formatProviderForSave)
@@ -553,6 +583,11 @@ async function handleSavePreferences(e) {
 
 // ==================== Models 管理 ====================
 async function fetchModelsInProviderModal() {
+    if (!apiKey) {
+        showError('API Key 未设置，请先登录');
+        return;
+    }
+    
     const base_url = document.getElementById('providerBaseUrl').value.trim();
     const api_key_val = document.getElementById('providerApiKey').value.trim();
     const models_endpoint = document.getElementById('providerModelsEndpoint').value.trim() || '/v1/models';
@@ -782,7 +817,10 @@ function stopStatusPolling() {
 
 async function loadProviderStatus(options = {}) {
     const { silent = false } = options;
-    if (!apiKey) return;
+    if (!apiKey || !apiKey.trim()) {
+        console.warn('[loadProviderStatus] Skipped: apiKey not available');
+        return;
+    }
 
     try {
         const response = await fetch('/admin/providers/status', {
@@ -815,6 +853,23 @@ async function loadProviderStatus(options = {}) {
 }
 
 // ==================== 日志查看 ====================
+function openLogOverlay(event) {
+    if (event) event.preventDefault();
+    const overlay = document.getElementById('logOverlay');
+    if (!overlay) return;
+    
+    overlay.classList.add('show');
+    initLogsView();
+}
+
+function closeLogOverlay(event) {
+    if (event) event.preventDefault();
+    const overlay = document.getElementById('logOverlay');
+    if (!overlay) return;
+    
+    overlay.classList.remove('show');
+}
+
 async function initLogsView() {
     await loadRecentLogs();
     if (!logsConnected) {
@@ -823,6 +878,7 @@ async function initLogsView() {
 }
 
 async function loadRecentLogs() {
+    if (!apiKey) return;
     try {
         const resp = await fetch('/admin/logs/recent?limit=500', {
             headers: { 'X-API-Key': apiKey }
@@ -848,6 +904,7 @@ async function loadRecentLogs() {
 }
 
 function startLogStream() {
+    if (!apiKey) return;
     stopLogStream();
     logsAbortController = new AbortController();
     logsConnected = true;
