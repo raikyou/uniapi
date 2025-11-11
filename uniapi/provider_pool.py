@@ -22,18 +22,24 @@ class ProviderState:
     model_patterns: List[str]
     cooldown_until: Optional[datetime] = None
     last_error: Optional[str] = None
+    last_test_latency: Optional[int] = None  # in milliseconds
+    last_test_time: Optional[datetime] = None
 
     def is_on_cooldown(self, now: datetime) -> bool:
         return self.cooldown_until is not None and now < self.cooldown_until
 
     def supports_model(self, model: str) -> bool:
+        # Check if client_model is in the mapping keys (client models we support)
         if self.config.model_mapping and model in self.config.model_mapping:
             return True
+        # Check if model matches any pattern
         if not self.model_patterns:
             return True
         return any(_match_model_pattern(model, pattern) for pattern in self.model_patterns)
 
     def get_provider_model(self, client_model: str) -> str:
+        # mapping format: {client_model: provider_model}
+        # client requests client_model, we forward provider_model to upstream
         if self.config.model_mapping and client_model in self.config.model_mapping:
             return self.config.model_mapping[client_model]
         return client_model
@@ -56,6 +62,10 @@ class ProviderState:
     def clear_cooldown(self) -> None:
         self.cooldown_until = None
         self.last_error = None
+
+    def update_test_result(self, latency_ms: int) -> None:
+        self.last_test_latency = latency_ms
+        self.last_test_time = datetime.now(timezone.utc)
 
 
 def _match_model_pattern(model: str, pattern: str) -> bool:
@@ -83,7 +93,31 @@ class ProviderPool:
                 if not state.config.enabled:
                     continue
                 patterns = state.model_patterns if state.model_patterns else ["*"]
-                listing[state.config.name] = list(patterns)
+
+                # Convert provider models to client models if mapping exists
+                # model_mapping format: {client_model: provider_model}
+                client_models = []
+                for provider_model in patterns:
+                    # Skip wildcards
+                    if "*" in provider_model or "?" in provider_model:
+                        client_models.append(provider_model)
+                        continue
+
+                    # Find if this provider model is mapped to a client model
+                    if state.config.model_mapping:
+                        client_model = None
+                        for c_model, p_model in state.config.model_mapping.items():
+                            if p_model == provider_model:
+                                client_model = c_model
+                                break
+                        if client_model:
+                            client_models.append(client_model)
+                        else:
+                            client_models.append(provider_model)
+                    else:
+                        client_models.append(provider_model)
+
+                listing[state.config.name] = client_models
             return listing
 
     async def initialize(self) -> None:
@@ -258,6 +292,13 @@ class ProviderPool:
 
     def mark_success(self, state: ProviderState) -> None:
         state.clear_cooldown()
+
+    def update_provider_test_result(self, provider_name: str, latency_ms: int) -> None:
+        """Update the test result for a provider by name."""
+        for state in self._states:
+            if state.config.name == provider_name:
+                state.update_test_result(latency_ms)
+                break
 
     def rebuild_on_config_change(self, config: AppConfig) -> None:
         self._config = config

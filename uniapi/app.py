@@ -389,6 +389,8 @@ class ProxyEngine:
                     "cooldown_remaining_seconds": cooldown_remaining,
                     "last_error": state.last_error,
                     "priority": state.config.priority,
+                    "last_test_latency": state.last_test_latency,
+                    "last_test_time": state.last_test_time.isoformat() if state.last_test_time else None,
                 }
             )
         return snapshot
@@ -574,10 +576,12 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
     @app.middleware("http")
     async def _enforce_api_key(request: Request, call_next):
         # Skip API key check for admin pages, static files, and common browser requests
-        if (request.url.path.startswith("/admin") or 
-            request.url.path.startswith("/static") or 
+        if (request.url.path.startswith("/admin") or
+            request.url.path.startswith("/static") or
+            request.url.path.startswith("/assets") or
+            request.url.path.startswith("/.well-known") or
             request.url.path == "/" or
-            request.url.path == "/favicon.ico"):
+            request.url.path.endswith((".ico", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp"))):
             return await call_next(request)
 
         if engine.config.api_key:
@@ -623,6 +627,11 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
     # Mount static files
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
+        # Mount assets directory for Vite build files
+        assets_dir = static_dir / "assets"
+        if assets_dir.exists():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.get("/admin/config")
@@ -726,6 +735,25 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
         # Return simple list for admin UI selection
         return {"models": models}
+
+    @app.post("/admin/providers/{provider_name}/test-result")
+    async def update_provider_test_result(provider_name: str, request: Request):
+        _require_admin(request)
+
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON")
+
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Invalid payload")
+
+        latency_ms = payload.get("latency_ms")
+        if not isinstance(latency_ms, (int, float)) or latency_ms < 0:
+            raise HTTPException(status_code=400, detail="latency_ms must be a non-negative number")
+
+        engine.pool.update_provider_test_result(provider_name, int(latency_ms))
+        return {"status": "success"}
 
     @app.post("/admin/providers/_probe_models")
     async def probe_provider_models(request: Request):

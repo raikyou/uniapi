@@ -135,16 +135,16 @@ def load_config(path: str | pathlib.Path) -> AppConfig:
                         raise ConfigError(
                             f"Provider model mapping for {name} must have exactly one key-value pair"
                         )
-                    client_model, provider_model = next(iter(model_value.items()))
-                    if not isinstance(client_model, str) or not client_model:
+                    provider_model, client_model = next(iter(model_value.items()))
+                    if not isinstance(provider_model, str) or not provider_model:
                         raise ConfigError(
                             f"Provider model mapping key for {name} must be a non-empty string"
                         )
-                    if not isinstance(provider_model, str) or not provider_model:
+                    if not isinstance(client_model, str) or not client_model:
                         raise ConfigError(
                             f"Provider model mapping value for {name} must be a non-empty string"
                         )
-                    models.append(client_model)
+                    models.append(provider_model)
                     model_mapping[client_model] = provider_model
                 else:
                     raise ConfigError(

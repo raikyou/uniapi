@@ -17,6 +17,7 @@ env/
 dist/
 build/
 *.egg-info/
+static/
 
 # Coverage / test output
 .coverage*
