@@ -38,8 +38,10 @@ export function ProviderTable({
   const { toast } = useToast();
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string | null>(null);
+  const [editingApiKey, setEditingApiKey] = useState<string | null>(null);
   const [editingPriority, setEditingPriority] = useState<string | null>(null);
   const [tempName, setTempName] = useState('');
+  const [tempApiKey, setTempApiKey] = useState('');
   const [tempPriority, setTempPriority] = useState('');
   const clickTimerRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
@@ -66,7 +68,7 @@ export function ProviderTable({
     }
   };
 
-  const handleNameEdit = (provider: Provider) => {
+  const handleNameClick = (provider: Provider) => {
     setEditingName(provider.name);
     setTempName(provider.name);
   };
@@ -84,6 +86,18 @@ export function ProviderTable({
       onUpdateProvider(oldName, { name: tempName });
     }
     setEditingName(null);
+  };
+
+  const handleApiKeyClick = (provider: Provider) => {
+    setEditingApiKey(provider.name);
+    setTempApiKey(provider.api_key);
+  };
+
+  const handleApiKeySave = (providerName: string) => {
+    if (tempApiKey && tempApiKey !== providers.find(p => p.name === providerName)?.api_key) {
+      onUpdateProvider(providerName, { api_key: tempApiKey });
+    }
+    setEditingApiKey(null);
   };
 
   const handlePriorityEdit = (provider: Provider) => {
@@ -210,7 +224,7 @@ export function ProviderTable({
       return (
         <Badge variant="warning" className="whitespace-nowrap inline-flex items-center gap-1">
           <Clock className="h-3 w-3" />
-          冷却中 ({status.cooldown_remaining_seconds}s)
+          冷却中 ({Math.ceil(status.cooldown_remaining_seconds || 0)}s)
         </Badge>
       );
     }
@@ -286,52 +300,94 @@ export function ProviderTable({
                 ) : (
                   <div className="flex items-center gap-2 group">
                     <span
-                      onDoubleClick={() => handleNameEdit(provider)}
-                      onClick={() => copyToClipboard(provider.name, '名称', `name-${provider.name}`)}
+                      onClick={() => handleNameClick(provider)}
                       className="cursor-pointer hover:underline"
-                      title="单击复制，双击编辑"
+                      title="单击编辑"
                     >
                       {provider.name}
                     </span>
-                    {copiedField === `name-${provider.name}` ? (
-                      <Check className="h-3 w-3 text-green-500" />
-                    ) : (
-                      <Copy className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard(provider.name, '名称', `name-${provider.name}`);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="复制名称"
+                    >
+                      {copiedField === `name-${provider.name}` ? (
+                        <Check className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <Copy className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                      )}
+                    </button>
                   </div>
                 )}
               </TableCell>
               <TableCell>
                 <div className="flex items-center gap-2 group">
-                  <span
-                    className="font-mono text-sm truncate max-w-xs cursor-pointer hover:underline"
-                    onClick={() => copyToClipboard(provider.base_url, 'Base URL', `url-${provider.name}`)}
-                    title="点击复制"
+                  <a
+                    href={provider.base_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-sm truncate max-w-xs cursor-pointer hover:underline text-blue-600 hover:text-blue-800"
+                    title="点击跳转到 URL"
                   >
                     {provider.base_url}
-                  </span>
-                  {copiedField === `url-${provider.name}` ? (
-                    <Check className="h-3 w-3 text-green-500 shrink-0" />
-                  ) : (
-                    <Copy className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                  )}
+                  </a>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyToClipboard(provider.base_url, 'Base URL', `url-${provider.name}`);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                    title="复制 URL"
+                  >
+                    {copiedField === `url-${provider.name}` ? (
+                      <Check className="h-3 w-3 text-green-500" />
+                    ) : (
+                      <Copy className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                    )}
+                  </button>
                 </div>
               </TableCell>
               <TableCell>
-                <div className="flex items-center gap-2 group">
-                  <span
-                    className="font-mono text-sm text-muted-foreground cursor-pointer hover:underline"
-                    onClick={() => copyToClipboard(provider.api_key, 'API Key', `key-${provider.name}`)}
-                    title="点击复制完整 API Key"
-                  >
-                    {maskApiKey(provider.api_key)}
-                  </span>
-                  {copiedField === `key-${provider.name}` ? (
-                    <Check className="h-3 w-3 text-green-500 shrink-0" />
-                  ) : (
-                    <Copy className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                  )}
-                </div>
+                {editingApiKey === provider.name ? (
+                  <Input
+                    value={tempApiKey}
+                    onChange={(e) => setTempApiKey(e.target.value)}
+                    onBlur={() => handleApiKeySave(provider.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleApiKeySave(provider.name);
+                      if (e.key === 'Escape') setEditingApiKey(null);
+                    }}
+                    className="h-8 font-mono text-sm"
+                    autoFocus
+                  />
+                ) : (
+                  <div className="flex items-center gap-2 group">
+                    <span
+                      onClick={() => handleApiKeyClick(provider)}
+                      className="font-mono text-sm text-muted-foreground cursor-pointer hover:underline"
+                      title="单击编辑"
+                    >
+                      {maskApiKey(provider.api_key)}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        copyToClipboard(provider.api_key, 'API Key', `key-${provider.name}`);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                      title="复制 API Key"
+                    >
+                      {copiedField === `key-${provider.name}` ? (
+                        <Check className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <Copy className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                      )}
+                    </button>
+                  </div>
+                )}
               </TableCell>
               <TableCell className="text-center">
                 {editingPriority === provider.name ? (

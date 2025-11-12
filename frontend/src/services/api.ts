@@ -242,6 +242,76 @@ class ApiService {
 
     return controller;
   }
+
+  createProviderStatusStream(
+    onMessage: (status: Record<string, ProviderStatus>) => void,
+    onError?: (error: Error) => void
+  ): AbortController {
+    const apiKey = this.getApiKey();
+    if (!apiKey) {
+      throw new Error('未设置 API Key');
+    }
+
+    const controller = new AbortController();
+    const decoder = new TextDecoder();
+
+    fetch('/admin/providers/status/stream', {
+      headers: {
+        'X-API-Key': apiKey,
+      },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Provider status stream connection failed: ${response.statusText}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('Unable to read response stream');
+        }
+
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          // Append new data to buffer
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete lines from buffer
+          const lines = buffer.split('\n');
+          // Keep the last incomplete line in buffer
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                // Transform array to map keyed by provider name
+                const statusMap: Record<string, ProviderStatus> = {};
+                if (data.providers && Array.isArray(data.providers)) {
+                  for (const provider of data.providers) {
+                    statusMap[provider.name] = provider;
+                  }
+                  onMessage(statusMap);
+                }
+              } catch (e) {
+                console.error('Failed to parse provider status data:', e);
+              }
+            }
+          }
+        }
+      })
+      .catch((error) => {
+        if (error.name !== 'AbortError') {
+          console.error('Provider status stream error:', error);
+          onError?.(error);
+        }
+      });
+
+    return controller;
+  }
 }
 
 export const apiService = new ApiService();

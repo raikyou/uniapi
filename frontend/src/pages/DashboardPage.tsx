@@ -22,11 +22,85 @@ export function DashboardPage() {
   const { toast } = useToast();
 
   useEffect(() => {
+    // Load initial data
     loadConfig();
-    loadProviderStatus();
 
-    const statusInterval = setInterval(loadProviderStatus, 5000);
-    return () => clearInterval(statusInterval);
+    // Use SSE for real-time provider status updates
+    let statusStreamController: AbortController | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const connectStatusStream = () => {
+      try {
+        statusStreamController = apiService.createProviderStatusStream(
+          (status) => {
+            setProviderStatus(status);
+          },
+          (error) => {
+            console.error('Provider status stream error:', error);
+            // Reconnect after 5 seconds on error
+            reconnectTimeout = setTimeout(() => {
+              connectStatusStream();
+            }, 5000);
+          }
+        );
+      } catch (error) {
+        console.error('Failed to create status stream:', error);
+        // Reconnect after 5 seconds on error
+        reconnectTimeout = setTimeout(() => {
+          connectStatusStream();
+        }, 5000);
+      }
+    };
+
+    // Connect to SSE stream (initial status will come from stream)
+    connectStatusStream();
+
+    // Update cooldown countdown every second
+    const countdownInterval = setInterval(() => {
+      setProviderStatus((prev) => {
+        const updated = { ...prev };
+        let hasChanges = false;
+
+        for (const [name, status] of Object.entries(updated)) {
+          if (status.cooldown_until) {
+            const cooldownTime = new Date(status.cooldown_until).getTime();
+            const now = Date.now();
+            const remaining = Math.max(0, (cooldownTime - now) / 1000);
+
+            // If cooldown has expired
+            if (remaining === 0) {
+              updated[name] = {
+                ...status,
+                cooldown_until: null,
+                cooldown_remaining_seconds: null,
+                auto_disabled: false,
+                status: 'enabled',
+              };
+              hasChanges = true;
+            } else if (status.cooldown_remaining_seconds !== remaining) {
+              // Update remaining seconds
+              updated[name] = {
+                ...status,
+                cooldown_remaining_seconds: remaining,
+              };
+              hasChanges = true;
+            }
+          }
+        }
+
+        return hasChanges ? updated : prev;
+      });
+    }, 1000);
+
+    return () => {
+      if (statusStreamController) {
+        statusStreamController.abort();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
+      clearInterval(countdownInterval);
+    };
   }, []);
 
   const loadConfig = async () => {
@@ -99,7 +173,7 @@ export function DashboardPage() {
     const newConfig = {
       ...config,
       providers: config.providers.map((p) =>
-        p.name === providerName ? { ...p, enabled: !p.enabled } : p
+        p.name === providerName ? { ...p, enabled: !(p.enabled !== false) } : p
       ),
     };
 

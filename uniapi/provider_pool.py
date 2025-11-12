@@ -92,32 +92,7 @@ class ProviderPool:
             for state in self._states:
                 if not state.config.enabled:
                     continue
-                patterns = state.model_patterns if state.model_patterns else ["*"]
-
-                # Convert provider models to client models if mapping exists
-                # model_mapping format: {client_model: provider_model}
-                client_models = []
-                for provider_model in patterns:
-                    # Skip wildcards
-                    if "*" in provider_model or "?" in provider_model:
-                        client_models.append(provider_model)
-                        continue
-
-                    # Find if this provider model is mapped to a client model
-                    if state.config.model_mapping:
-                        client_model = None
-                        for c_model, p_model in state.config.model_mapping.items():
-                            if p_model == provider_model:
-                                client_model = c_model
-                                break
-                        if client_model:
-                            client_models.append(client_model)
-                        else:
-                            client_models.append(provider_model)
-                    else:
-                        client_models.append(provider_model)
-
-                listing[state.config.name] = client_models
+                listing[state.config.name] = self._client_models_for_state(state)
             return listing
 
     async def initialize(self) -> None:
@@ -130,12 +105,43 @@ class ProviderPool:
                 proxy=self.preferences.proxy,
             )
             states: List[ProviderState] = []
+            preserved_states = getattr(self, '_preserved_states', {})
+
             for provider in self._config.providers:
                 patterns = provider.models or []
-                state = ProviderState(config=provider, model_patterns=list(patterns))
+
+                # Check if we have preserved state for this provider
+                old_state = preserved_states.get(provider.name)
+                if old_state:
+                    # Check if enabled status has changed - if so, clear cooldown
+                    enabled_changed = old_state.config.enabled != provider.enabled
+
+                    # Restore state with new config but preserve cooldown and test results
+                    # Clear cooldown if enabled status changed
+                    state = ProviderState(
+                        config=provider,
+                        model_patterns=list(patterns),
+                        cooldown_until=None if enabled_changed else old_state.cooldown_until,
+                        last_error=None if enabled_changed else old_state.last_error,
+                        last_test_latency=old_state.last_test_latency,
+                        last_test_time=old_state.last_test_time,
+                    )
+                    if enabled_changed:
+                        logger.debug("Cleared cooldown for provider %s due to enabled status change", provider.name)
+                    else:
+                        logger.debug("Restored state for provider %s (cooldown: %s)",
+                                    provider.name, old_state.cooldown_until)
+                else:
+                    # New provider, create fresh state
+                    state = ProviderState(config=provider, model_patterns=list(patterns))
+
                 states.append(state)
 
             self._states = states
+            # Clear preserved states after restoration
+            if hasattr(self, '_preserved_states'):
+                delattr(self, '_preserved_states')
+
             await self._refresh_missing_model_lists()
             self._initialized = True
 
@@ -256,36 +262,16 @@ class ProviderPool:
     async def iter_candidates(self, model: str) -> List[ProviderState]:
         if not self._initialized:
             await self.initialize()
-        now = datetime.now(timezone.utc)
-        available = [
-            state
-            for state in self._states
-            if state.config.enabled and not state.is_on_cooldown(now) and state.supports_model(model)
-        ]
+        available = self._filter_available_states(model=model)
         if not available:
             return []
-
-        # Keep only the highest priority providers; shuffle to balance within the tier
-        highest_priority = max(state.config.priority for state in available)
-        top_candidates = [
-            state for state in available if state.config.priority == highest_priority
-        ]
-        random.shuffle(top_candidates)
-        return top_candidates
+        return self._sort_by_priority(available)
 
     def candidates_for_any(self) -> List[ProviderState]:
-        now = datetime.now(timezone.utc)
-        available = [state for state in self._states if not state.is_on_cooldown(now)]
-        available = [state for state in available if state.config.enabled]
+        available = self._filter_available_states(model=None)
         if not available:
             return []
-
-        highest_priority = max(state.config.priority for state in available)
-        top_candidates = [
-            state for state in available if state.config.priority == highest_priority
-        ]
-        random.shuffle(top_candidates)
-        return top_candidates
+        return self._sort_by_priority(available)
 
     def mark_failure(self, state: ProviderState, reason: str) -> None:
         state.begin_cooldown(self.preferences, reason)
@@ -301,10 +287,53 @@ class ProviderPool:
                 break
 
     def rebuild_on_config_change(self, config: AppConfig) -> None:
+        # Preserve existing provider states (cooldown, test results, etc.)
+        old_states_by_name = {state.config.name: state for state in self._states}
+
         self._config = config
         self._states = []
         self._initialized = False
 
+        # Store old states for restoration after initialization
+        self._preserved_states = old_states_by_name
+
     @property
     def states(self) -> List[ProviderState]:
         return list(self._states)
+
+    def _client_models_for_state(self, state: ProviderState) -> List[str]:
+        patterns = state.model_patterns if state.model_patterns else ["*"]
+        if not state.config.model_mapping:
+            return list(patterns)
+        reverse_mapping = {upstream: client for client, upstream in state.config.model_mapping.items()}
+        client_models: List[str] = []
+        for provider_model in patterns:
+            if "*" in provider_model or "?" in provider_model:
+                client_models.append(provider_model)
+                continue
+            client_models.append(reverse_mapping.get(provider_model, provider_model))
+        return client_models
+
+    def _filter_available_states(self, model: Optional[str]) -> List[ProviderState]:
+        now = datetime.now(timezone.utc)
+        eligible: List[ProviderState] = []
+        for state in self._states:
+            if not state.config.enabled or state.is_on_cooldown(now):
+                continue
+            if model and not state.supports_model(model):
+                continue
+            eligible.append(state)
+        return eligible
+
+    def _sort_by_priority(self, states: List[ProviderState]) -> List[ProviderState]:
+        if not states:
+            return []
+        priority_groups: dict[int, list[ProviderState]] = {}
+        for state in states:
+            priority_groups.setdefault(state.config.priority, []).append(state)
+        ordered: List[ProviderState] = []
+        for priority in sorted(priority_groups.keys(), reverse=True):
+            group = priority_groups[priority]
+            random.shuffle(group)
+            ordered.extend(group)
+        return ordered

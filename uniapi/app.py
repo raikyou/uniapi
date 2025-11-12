@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import httpx
 import yaml
@@ -80,6 +80,33 @@ logging.getLogger().addHandler(_admin_log_handler)
 # Also attach to this module logger in case propagation is disabled
 logging.getLogger(__name__).addHandler(_admin_log_handler)
 
+
+# --- Provider status broadcasting for real-time admin UI updates ---
+class _AdminStatusHandler:
+    def __init__(self) -> None:
+        self.subscribers: Set[asyncio.Queue] = set()
+
+    def broadcast(self, status_snapshot: list[dict[str, object]]) -> None:
+        """Broadcast provider status update to all connected clients."""
+        item = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "providers": status_snapshot,
+        }
+        for q in list(self.subscribers):
+            with contextlib.suppress(asyncio.QueueFull):
+                q.put_nowait(item)
+
+    def subscribe(self, max_queue: int = 100) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=max_queue)
+        self.subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self.subscribers.discard(q)
+
+
+_admin_status_handler = _AdminStatusHandler()
+
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -97,27 +124,32 @@ TRUTHY_STRINGS = {"1", "true", "yes", "on"}
 FALSY_STRINGS = {"0", "false", "no", "off"}
 
 
-def _extract_model_from_body(body_bytes: bytes, headers: Headers) -> Optional[str]:
+def _extract_model_from_body(
+    body_bytes: bytes,
+    headers: Headers,
+) -> tuple[Optional[str], Optional[dict[str, object]]]:
     content_type = headers.get("content-type", "").lower()
     if "application/json" not in content_type:
-        return None
+        return None, None
     if not body_bytes:
-        return None
+        return None, None
     try:
         payload = json.loads(body_bytes)
     except json.JSONDecodeError:
-        return None
+        return None, None
     if isinstance(payload, dict):
         model_value = payload.get("model")
         if isinstance(model_value, str):
-            return model_value
-    return None
+            return model_value, payload
+        return None, payload
+    return None, None
 
 
 def _is_streaming_request(
     body_bytes: bytes,
     headers: Headers,
-    query_items: list[tuple[str, str]],
+    query_items: Sequence[tuple[str, str]],
+    parsed_body: Optional[dict[str, object]] = None,
 ) -> bool:
     accept_header = headers.get("accept", "").lower()
     if "text/event-stream" in accept_header:
@@ -134,12 +166,15 @@ def _is_streaming_request(
     content_type = headers.get("content-type", "").lower()
     if "application/json" not in content_type or not body_bytes:
         return False
-    try:
-        payload = json.loads(body_bytes)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(payload, dict):
-        return False
+    if parsed_body is not None:
+        payload = parsed_body
+    else:
+        try:
+            payload = json.loads(body_bytes)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict):
+            return False
 
     stream_value = payload.get("stream")
     if stream_value is None:
@@ -157,6 +192,38 @@ def _is_streaming_request(
             return False
 
     return False
+
+
+def _body_with_model_override(
+    body_bytes: Optional[bytes],
+    parsed_body: Optional[dict[str, object]],
+    provider_model: str,
+) -> Optional[bytes]:
+    if not body_bytes or parsed_body is None:
+        return body_bytes
+    if "model" not in parsed_body:
+        return body_bytes
+    payload = dict(parsed_body)
+    payload["model"] = provider_model
+    try:
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return body_bytes
+
+
+def _query_with_model_override(
+    query_items: tuple[tuple[str, str], ...],
+    provider_model: str,
+) -> tuple[tuple[str, str], ...]:
+    replaced = False
+    updated: list[tuple[str, str]] = []
+    for key, value in query_items:
+        if key.lower() == "model":
+            updated.append((key, provider_model))
+            replaced = True
+        else:
+            updated.append((key, value))
+    return tuple(updated) if replaced else query_items
 
 
 def _extract_api_key(headers: Headers) -> Optional[str]:
@@ -332,6 +399,8 @@ class ProxyEngine:
         # Warm up pool/client so the service stays responsive post‑reload
         await self._pool.initialize()
         await self.ensure_client()
+        # Broadcast updated provider status to connected clients
+        await self.broadcast_provider_status()
 
     @property
     def pool(self) -> ProviderPool:
@@ -395,12 +464,21 @@ class ProxyEngine:
             )
         return snapshot
 
+    async def broadcast_provider_status(self) -> None:
+        """Broadcast current provider status to all SSE subscribers."""
+        try:
+            snapshot = await self.provider_status_snapshot()
+            _admin_status_handler.broadcast(snapshot)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to broadcast provider status: %s", exc)
+
     async def dispatch(
         self,
         request: Request,
         *,
         model: Optional[str],
         body_bytes: Optional[bytes] = None,
+        parsed_body: Optional[dict[str, object]] = None,
     ) -> Response:
         candidates = (
             await self._pool.iter_candidates(model)
@@ -413,14 +491,25 @@ class ProxyEngine:
             )
             raise HTTPException(status_code=503, detail=message)
 
+        # Log candidate list for debugging
+        candidate_names = [f"{s.config.name}(p{s.config.priority})" for s in candidates]
+        logger.debug("Candidates for model '%s': %s", model or "<any>", ", ".join(candidate_names))
+
         client = await self.ensure_client()
         if body_bytes is None:
             body_bytes = await request.body()
+        if parsed_body is None and body_bytes:
+            _, parsed_body = _extract_model_from_body(body_bytes, request.headers)
 
         auth_header_name, auth_value_prefix = _determine_auth_header(request.headers)
         cleaned_headers = _clean_headers(request.headers, skip={auth_header_name})
-        query_items = list(request.query_params.multi_items())
-        streaming_requested = _is_streaming_request(body_bytes, request.headers, query_items)
+        query_items = tuple(request.query_params.multi_items())
+        streaming_requested = _is_streaming_request(
+            body_bytes,
+            request.headers,
+            query_items,
+            parsed_body,
+        )
         timeout_value = self._config.preferences.model_timeout
         if streaming_requested:
             request_timeout = httpx.Timeout(
@@ -432,6 +521,8 @@ class ProxyEngine:
         else:
             request_timeout = httpx.Timeout(timeout_value)
         failures: list[str] = []
+        base_body = body_bytes
+        base_query = query_items
 
         for state in candidates:
             provider = state.config
@@ -440,25 +531,12 @@ class ProxyEngine:
             headers[auth_header_name] = f"{auth_value_prefix}{provider.api_key}".strip()
 
             provider_model = state.get_provider_model(model) if model else None
-            modified_body = body_bytes
-            modified_query = query_items
+            modified_body = base_body
+            modified_query = base_query
 
             if model and provider_model != model:
-                if body_bytes:
-                    try:
-                        payload = json.loads(body_bytes)
-                        if isinstance(payload, dict) and "model" in payload:
-                            payload["model"] = provider_model
-                            modified_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        pass
-
-                modified_query = []
-                for key, value in query_items:
-                    if key.lower() == "model":
-                        modified_query.append((key, provider_model))
-                    else:
-                        modified_query.append((key, value))
+                modified_body = _body_with_model_override(base_body, parsed_body, provider_model)
+                modified_query = _query_with_model_override(base_query, provider_model)
 
             try:
                 logger.info(
@@ -481,7 +559,11 @@ class ProxyEngine:
             except httpx.RequestError as exc:
                 reason = f"{type(exc).__name__}: {exc}"
                 failures.append(f"{provider.name}: {reason}")
+                logger.warning("Provider %s failed with %s, trying next provider", provider.name, reason)
                 self._pool.mark_failure(state, reason)
+                # Broadcast status change in background (don't await to avoid blocking dispatch)
+                task = asyncio.create_task(self.broadcast_provider_status())
+                task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                 continue
 
             streaming_selected = False
@@ -489,7 +571,11 @@ class ProxyEngine:
                 if response.status_code >= 500 or response.status_code == 429:
                     reason = f"HTTP {response.status_code}"
                     failures.append(f"{provider.name}: {reason}")
+                    logger.warning("Provider %s returned %s, trying next provider", provider.name, reason)
                     self._pool.mark_failure(state, reason)
+                    # Broadcast status change in background (don't await to avoid blocking dispatch)
+                    task = asyncio.create_task(self.broadcast_provider_status())
+                    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                     continue
 
                 if response.status_code >= 400:
@@ -753,6 +839,7 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
             raise HTTPException(status_code=400, detail="latency_ms must be a non-negative number")
 
         engine.pool.update_provider_test_result(provider_name, int(latency_ms))
+        await engine.broadcast_provider_status()
         return {"status": "success"}
 
     @app.post("/admin/providers/_probe_models")
@@ -845,13 +932,46 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
 
         return StreamingResponse(event_iterator(), media_type="text/event-stream")
 
+    @app.get("/admin/providers/status/stream")
+    async def admin_provider_status_stream(request: Request):
+        _require_admin(request)
+
+        async def event_iterator():
+            queue = _admin_status_handler.subscribe()
+            try:
+                # Send initial status snapshot
+                snapshot = await engine.provider_status_snapshot()
+                initial_payload = json.dumps(
+                    {"ts": datetime.now(timezone.utc).isoformat(), "providers": snapshot},
+                    ensure_ascii=False
+                )
+                yield f"data: {initial_payload}\n\n".encode("utf-8")
+
+                # Stream updates
+                while True:
+                    item = await queue.get()
+                    payload = json.dumps(item, ensure_ascii=False)
+                    yield f"data: {payload}\n\n".encode("utf-8")
+            except asyncio.CancelledError:
+                pass
+            finally:
+                _admin_status_handler.unsubscribe(queue)
+
+        return StreamingResponse(event_iterator(), media_type="text/event-stream")
+
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
     async def universal_proxy(full_path: str, request: Request) -> Response:
         body_bytes = await request.body()
-        model = _extract_model_from_body(body_bytes, request.headers) or request.query_params.get("model")
+        model_from_body, parsed_body = _extract_model_from_body(body_bytes, request.headers)
+        model = model_from_body or request.query_params.get("model")
         if model is None and not engine.is_model_listing_path(request.url.path):
             raise HTTPException(status_code=400, detail="Request must include a model field")
-        return await engine.dispatch(request, model=model, body_bytes=body_bytes)
+        return await engine.dispatch(
+            request,
+            model=model,
+            body_bytes=body_bytes,
+            parsed_body=parsed_body,
+        )
 
     return app
 
