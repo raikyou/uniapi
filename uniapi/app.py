@@ -294,8 +294,12 @@ def _should_stream_response(response: httpx.Response, request: Request) -> bool:
 
 
 def _apply_response_headers(target: MutableHeaders, source: Headers) -> None:
+    # httpx decodes compressed responses automatically, so we strip any
+    # upstream content-encoding header to avoid confusing downstream proxies.
+    strip = {"content-encoding"}
     for key, value in source.items():
-        if key.lower() in HOP_BY_HOP_HEADERS:
+        key_lower = key.lower()
+        if key_lower in HOP_BY_HOP_HEADERS or key_lower in strip:
             continue
         target[key] = value
 
