@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import NamedTuple, Optional, Sequence
 
 import httpx
 import yaml
@@ -123,6 +123,12 @@ HOP_BY_HOP_HEADERS = {
 TRUTHY_STRINGS = {"1", "true", "yes", "on"}
 FALSY_STRINGS = {"0", "false", "no", "off"}
 
+API_KEY_HEADER_CANDIDATES: tuple[str, ...] = (
+    "x-goog-api-key",
+    "x-api-key",
+    "authorization",
+)
+
 
 def _extract_model_from_body(
     body_bytes: bytes,
@@ -143,6 +149,43 @@ def _extract_model_from_body(
             return model_value, payload
         return None, payload
     return None, None
+
+
+class PathModelParts(NamedTuple):
+    model: str
+    prefix: str
+    suffix: str
+
+
+def _extract_model_from_path(path: str) -> Optional[PathModelParts]:
+    marker = "/models/"
+    idx = path.find(marker)
+    if idx == -1:
+        return None
+
+    tail = path[idx + len(marker):]
+    if not tail:
+        return None
+
+    segment, _, remainder_after_segment = tail.partition("/")
+    if not segment:
+        return None
+
+    model, colon, after_model = segment.partition(":")
+    if not model:
+        return None
+
+    suffix_parts: list[str] = []
+    if colon:
+        suffix_parts.append(f"{colon}{after_model}")
+    if remainder_after_segment:
+        suffix_parts.append(f"/{remainder_after_segment}")
+
+    return PathModelParts(
+        model=model,
+        prefix=path[: idx + len(marker)],
+        suffix="".join(suffix_parts),
+    )
 
 
 def _is_streaming_request(
@@ -227,21 +270,26 @@ def _query_with_model_override(
 
 
 def _extract_api_key(headers: Headers) -> Optional[str]:
-    api_key = headers.get("x-api-key")
-    if api_key:
-        return api_key
-    authorization = headers.get("authorization")
-    if not authorization:
-        return None
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() == "bearer" and token:
-        return token
+    # Accept either of the configured API key headers or Authorization Bearer.
+    for candidate in API_KEY_HEADER_CANDIDATES:
+        value = headers.get(candidate)
+        if not value:
+            continue
+        if candidate == "authorization":
+            scheme, sep, token = value.partition(" ")
+            if not sep:
+                continue
+            if scheme.lower() == "bearer" and token:
+                return token
+            continue
+        return value
     return None
 
 
 def _clean_headers(headers: Headers, *, skip: Optional[set[str]] = None) -> dict:
     skip_lower = {item.lower() for item in skip} if skip else set()
-    skip_lower.update({"authorization", "x-api-key", "x-goog-api-key", "host"})
+    skip_lower.update({key.lower() for key in API_KEY_HEADER_CANDIDATES})
+    skip_lower.add("host")
     filtered = {}
     for key, value in headers.items():
         key_lower = key.lower()
@@ -255,16 +303,16 @@ def _clean_headers(headers: Headers, *, skip: Optional[set[str]] = None) -> dict
 
 def _determine_auth_header(headers: Headers) -> tuple[str, str]:
     # Prefer explicit API key headers from the client; fall back to authorization scheme.
-    for candidate in ("x-goog-api-key", "x-api-key"):
-        if headers.get(candidate):
-            return candidate, ""
-
-    authorization = headers.get("authorization")
-    if authorization:
-        scheme, sep, _ = authorization.partition(" ")
-        if sep:
-            return "Authorization", f"{scheme} "
-        return "Authorization", ""
+    for candidate in API_KEY_HEADER_CANDIDATES:
+        value = headers.get(candidate)
+        if not value:
+            continue
+        if candidate == "authorization":
+            scheme, sep, _ = value.partition(" ")
+            if sep:
+                return "Authorization", f"{scheme} "
+            return "Authorization", ""
+        return candidate, ""
 
     # Default to Bearer for providers that expect standard API keys.
     return "Authorization", "Bearer "
@@ -483,6 +531,7 @@ class ProxyEngine:
         model: Optional[str],
         body_bytes: Optional[bytes] = None,
         parsed_body: Optional[dict[str, object]] = None,
+        path_model_parts: Optional[PathModelParts] = None,
     ) -> Response:
         candidates = (
             await self._pool.iter_candidates(model)
@@ -527,14 +576,23 @@ class ProxyEngine:
         failures: list[str] = []
         base_body = body_bytes
         base_query = query_items
+        path_parts = path_model_parts or _extract_model_from_path(request.url.path)
+        base_path = request.url.path
 
         for state in candidates:
             provider = state.config
-            url = f"{provider.normalized_base_url()}/{request.url.path.lstrip('/')}"
+            provider_model = state.get_provider_model(model) if model else None
+
+            upstream_path = base_path
+            if path_parts and model:
+                target_model = provider_model or model
+                if target_model != path_parts.model:
+                    upstream_path = f"{path_parts.prefix}{target_model}{path_parts.suffix}"
+
+            url = f"{provider.normalized_base_url()}/{upstream_path.lstrip('/')}"
             headers = dict(cleaned_headers)
             headers[auth_header_name] = f"{auth_value_prefix}{provider.api_key}".strip()
 
-            provider_model = state.get_provider_model(model) if model else None
             modified_body = base_body
             modified_query = base_query
 
@@ -967,7 +1025,9 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
     async def universal_proxy(full_path: str, request: Request) -> Response:
         body_bytes = await request.body()
         model_from_body, parsed_body = _extract_model_from_body(body_bytes, request.headers)
-        model = model_from_body or request.query_params.get("model")
+        path_model_parts = _extract_model_from_path(request.url.path)
+        path_model = path_model_parts.model if path_model_parts else None
+        model = model_from_body or request.query_params.get("model") or path_model
         if model is None and not engine.is_model_listing_path(request.url.path):
             raise HTTPException(status_code=400, detail="Request must include a model field")
         return await engine.dispatch(
@@ -975,6 +1035,7 @@ def create_app(config_path: str | Path = "config.yaml") -> FastAPI:
             model=model,
             body_bytes=body_bytes,
             parsed_body=parsed_body,
+            path_model_parts=path_model_parts,
         )
 
     return app
