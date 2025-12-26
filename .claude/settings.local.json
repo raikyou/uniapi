@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.portkey.ai)",
+      "WebFetch(domain:openrouter.ai)",
+      "WebFetch(domain:sdk.vercel.ai)",
+      "WebFetch(domain:python.langchain.com)",
+      "WebFetch(domain:docs.litellm.ai)",
+      "Bash(npm create:*)",
+      "Bash(npm install)",
+      "Bash(npm install:*)",
+      "Bash(npx tailwindcss:*)",
+      "Bash(chmod +x /Users/raikyou/dev/uniapi/backend/run.sh)",
+      "Skill(superpowers:brainstorming)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "context7"
+  ]
+}
