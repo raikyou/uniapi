@@ -1,165 +1,216 @@
-import json
+from __future__ import annotations
+
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from app.models import Model, Provider, ProviderStatus
-from app.schemas.provider import ProviderCreate, ProviderUpdate
+from ..db import DatabaseSession, DatabaseReadOnlySession
 
 
-class ProviderService:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+def _utc_now() -> str:
+    return datetime.utcnow().isoformat()
 
-    async def get_all(self, include_disabled: bool = True) -> List[Provider]:
-        """Get all providers ordered by priority DESC"""
-        query = select(Provider).order_by(Provider.priority.desc())
-        if not include_disabled:
-            query = query.where(Provider.status != ProviderStatus.DISABLED)
-        result = await self.db.execute(query)
-        return result.scalars().all()
 
-    async def get_by_id(self, provider_id: int) -> Optional[Provider]:
-        """Get a provider by ID"""
-        query = select(Provider).where(Provider.id == provider_id)
-        result = await self.db.execute(query)
-        return result.scalar_one_or_none()
+def list_providers(limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        if limit is None:
+            rows = conn.execute(
+                "SELECT * FROM providers ORDER BY priority DESC, name ASC, id DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM providers ORDER BY priority DESC, name ASC, id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
-    async def get_by_name(self, name: str) -> Optional[Provider]:
-        """Get a provider by name"""
-        query = select(Provider).where(Provider.name == name)
-        result = await self.db.execute(query)
-        return result.scalar_one_or_none()
 
-    async def create(self, data: ProviderCreate) -> Provider:
-        """Create a new provider"""
-        provider = Provider(
-            name=data.name,
-            type=data.type,
-            base_url=data.base_url,
-            api_key=data.api_key,
-            extra_config=data.extra_config,
-            priority=data.priority,
-            is_passthrough=data.is_passthrough,
-            freeze_duration=data.freeze_duration,
+def get_provider(provider_id: int) -> Optional[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        row = conn.execute(
+            "SELECT * FROM providers WHERE id = ?",
+            (provider_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def create_provider(payload: Dict[str, Any]) -> Dict[str, Any]:
+    now = _utc_now()
+    with DatabaseSession() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO providers (name, type, base_url, api_key, priority, enabled, translate_enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["name"],
+                payload["type"],
+                payload["base_url"],
+                payload["api_key"],
+                payload.get("priority", 0),
+                1 if payload.get("enabled", True) else 0,
+                1 if payload.get("translate_enabled", False) else 0,
+                now,
+                now,
+            ),
         )
-        self.db.add(provider)
-        await self.db.commit()
-        await self.db.refresh(provider)
-        return provider
+        provider_id = cur.lastrowid
+    return get_provider(provider_id)
 
-    async def update(self, provider_id: int, data: ProviderUpdate) -> Optional[Provider]:
-        """Update a provider"""
-        provider = await self.get_by_id(provider_id)
-        if not provider:
-            return None
 
-        update_data = data.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(provider, field, value)
+def update_provider(provider_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    existing = get_provider(provider_id)
+    if not existing:
+        return None
 
-        provider.updated_at = datetime.utcnow()
-        await self.db.commit()
-        await self.db.refresh(provider)
-        return provider
+    fields = []
+    values = []
+    for key in ["name", "type", "base_url", "api_key", "priority", "enabled", "translate_enabled"]:
+        if key in payload and payload[key] is not None:
+            fields.append(f"{key} = ?")
+            if key in ("enabled", "translate_enabled"):
+                values.append(1 if payload[key] else 0)
+            else:
+                values.append(payload[key])
 
-    async def delete(self, provider_id: int) -> bool:
-        """Delete a provider"""
-        provider = await self.get_by_id(provider_id)
-        if not provider:
-            return False
+    if fields:
+        values.append(_utc_now())
+        values.append(provider_id)
+        with DatabaseSession() as conn:
+            conn.execute(
+                f"UPDATE providers SET {', '.join(fields)}, updated_at = ? WHERE id = ?",
+                tuple(values),
+            )
 
-        await self.db.delete(provider)
-        await self.db.commit()
-        return True
+    return get_provider(provider_id)
 
-    async def update_status(self, provider_id: int, status: ProviderStatus) -> Optional[Provider]:
-        """Update provider status"""
-        provider = await self.get_by_id(provider_id)
-        if not provider:
-            return None
 
-        provider.status = status
-        if status != ProviderStatus.FROZEN:
-            provider.frozen_at = None
-            provider.freeze_reason = None
+def update_provider_test_performance(
+    provider_id: int, *, last_tested_at: str, last_ftl_ms: int, last_tps: Optional[float]
+) -> Optional[Dict[str, Any]]:
+    existing = get_provider(provider_id)
+    if not existing:
+        return None
 
-        provider.updated_at = datetime.utcnow()
-        await self.db.commit()
-        await self.db.refresh(provider)
-        return provider
-
-    async def freeze(
-        self, provider_id: int, reason: str, duration: Optional[int] = None
-    ) -> Optional[Provider]:
-        """Freeze a provider"""
-        provider = await self.get_by_id(provider_id)
-        if not provider:
-            return None
-
-        provider.status = ProviderStatus.FROZEN
-        provider.frozen_at = datetime.utcnow()
-        provider.freeze_reason = reason
-        if duration:
-            provider.freeze_duration = duration
-
-        await self.db.commit()
-        await self.db.refresh(provider)
-        return provider
-
-    async def unfreeze(self, provider_id: int) -> Optional[Provider]:
-        """Unfreeze a provider"""
-        provider = await self.get_by_id(provider_id)
-        if not provider:
-            return None
-
-        provider.status = ProviderStatus.ACTIVE
-        provider.frozen_at = None
-        provider.freeze_reason = None
-        provider.updated_at = datetime.utcnow()
-
-        await self.db.commit()
-        await self.db.refresh(provider)
-        return provider
-
-    async def get_models_count(self, provider_id: int) -> int:
-        """Get count of models for a provider"""
-        query = select(func.count(Model.id)).where(Model.provider_id == provider_id)
-        result = await self.db.execute(query)
-        return result.scalar() or 0
-
-    async def get_available_providers(
-        self, model_alias: Optional[str] = None
-    ) -> List[Provider]:
-        """Get available (active and not frozen) providers ordered by priority"""
-        query = (
-            select(Provider)
-            .where(Provider.status == ProviderStatus.ACTIVE)
-            .order_by(Provider.priority.desc())
+    with DatabaseSession() as conn:
+        conn.execute(
+            """
+            UPDATE providers
+            SET last_tested_at = ?, last_ftl_ms = ?, last_tps = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (last_tested_at, last_ftl_ms, last_tps, _utc_now(), provider_id),
         )
-        result = await self.db.execute(query)
-        providers = result.scalars().all()
+    return get_provider(provider_id)
 
-        # Filter out frozen providers based on freeze time
-        available = []
-        now = datetime.utcnow()
-        for provider in providers:
-            if provider.frozen_at:
-                elapsed = (now - provider.frozen_at).total_seconds()
-                if elapsed < provider.freeze_duration:
-                    continue  # Still frozen
-                else:
-                    # Auto unfreeze
-                    provider.status = ProviderStatus.ACTIVE
-                    provider.frozen_at = None
-                    provider.freeze_reason = None
 
-            available.append(provider)
+def delete_provider(provider_id: int) -> bool:
+    with DatabaseSession() as conn:
+        conn.execute("DELETE FROM provider_models WHERE provider_id = ?", (provider_id,))
+        cur = conn.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
+    return cur.rowcount > 0
 
-        if available:
-            await self.db.commit()
 
-        return available
+def list_provider_models(provider_id: int) -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            "SELECT * FROM provider_models WHERE provider_id = ? ORDER BY id DESC",
+            (provider_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def create_provider_model(provider_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    now = _utc_now()
+    with DatabaseSession() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO provider_models (provider_id, model_id, alias, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                provider_id,
+                payload["model_id"],
+                payload.get("alias"),
+                now,
+            ),
+        )
+        model_id = cur.lastrowid
+    return get_provider_model(model_id)
+
+
+def get_provider_model(model_id: int) -> Optional[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        row = conn.execute(
+            "SELECT * FROM provider_models WHERE id = ?",
+            (model_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def update_provider_model(model_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    existing = get_provider_model(model_id)
+    if not existing:
+        return None
+
+    fields = []
+    values = []
+    for key in ["model_id", "alias"]:
+        if key in payload:
+            fields.append(f"{key} = ?")
+            values.append(payload[key])
+
+    if fields:
+        values.append(model_id)
+        with DatabaseSession() as conn:
+            conn.execute(
+                f"UPDATE provider_models SET {', '.join(fields)} WHERE id = ?",
+                tuple(values),
+            )
+
+    return get_provider_model(model_id)
+
+
+def delete_provider_model(model_id: int) -> bool:
+    with DatabaseSession() as conn:
+        cur = conn.execute("DELETE FROM provider_models WHERE id = ?", (model_id,))
+    return cur.rowcount > 0
+
+
+def find_model_match(provider_id: int, model_name: str) -> Optional[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM provider_models
+            WHERE provider_id = ?
+            ORDER BY id DESC
+            """,
+            (provider_id,),
+        ).fetchall()
+
+    for row in rows:
+        row_dict = dict(row)
+        alias = row_dict.get("alias")
+        if alias and alias == model_name:
+            return row_dict
+
+    for row in rows:
+        row_dict = dict(row)
+        alias = row_dict.get("alias")
+        if alias and _regex_match(alias, model_name):
+            return row_dict
+
+    for row in rows:
+        row_dict = dict(row)
+        if row_dict.get("model_id") == model_name:
+            return row_dict
+
+    return None
+
+
+def _regex_match(pattern: str, value: str) -> bool:
+    import re
+
+    try:
+        return re.match(pattern, value) is not None
+    except re.error:
+        return False

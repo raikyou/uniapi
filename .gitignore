@@ -1,67 +1,22 @@
-# Dependencies
-node_modules/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-ENV/
-env/
-.venv/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# Environment
-.env
-.env.local
-.env.*.local
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Logs
-*.log
-logs/
-
-# OS
 .DS_Store
-Thumbs.db
+.env
+.env.*
 
-# Test
-.coverage
-htmlcov/
-.pytest_cache/
-.tox/
-
-# Build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
 *.egg-info/
-dist/
-build/
 
-# Data
-data/
+*.db
+backend/app/data/*.sqlite
+backend/app/data/*.sqlite3
+*.log
+
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+.tmp
+.claude

@@ -1,205 +1,303 @@
-import json
+from __future__ import annotations
+
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from ..db import DatabaseSession, DatabaseReadOnlySession
+from .config_service import get_config
+from ..settings import LOG_RETENTION_DAYS
 
-from app.models import RequestLog
+
+def _utc_now() -> str:
+    return datetime.utcnow().isoformat()
 
 
-class RequestLogService:
-    def __init__(self, db: AsyncSession):
-        self.db = db
+def _retention_days() -> int:
+    value = get_config("log_retention_days")
+    if value:
+        try:
+            return int(value)
+        except ValueError:
+            return LOG_RETENTION_DAYS
+    return LOG_RETENTION_DAYS
 
-    async def get_logs(
-        self,
-        page: int = 1,
-        page_size: int = 20,
-        provider_id: Optional[int] = None,
-        model: Optional[str] = None,
-        is_success: Optional[bool] = None,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-    ):
-        """Get paginated request logs"""
-        query = select(RequestLog).order_by(RequestLog.created_at.desc())
 
-        if provider_id:
-            query = query.where(RequestLog.provider_id == provider_id)
-        if model:
-            query = query.where(RequestLog.model.contains(model))
-        if is_success is not None:
-            query = query.where(RequestLog.is_success == is_success)
-        if start_time:
-            query = query.where(RequestLog.created_at >= start_time)
-        if end_time:
-            query = query.where(RequestLog.created_at <= end_time)
+_LOG_SELECT_SQL = """
+    SELECT
+        r.id,
+        r.request_id,
+        r.model_alias,
+        r.model_id,
+        r.provider_id,
+        r.endpoint,
+        COALESCE(b.request_body, r.request_body) AS request_body,
+        COALESCE(b.response_body, r.response_body) AS response_body,
+        r.is_streaming,
+        r.status,
+        r.latency_ms,
+        r.first_token_ms,
+        r.tokens_in,
+        r.tokens_out,
+        r.tokens_total,
+        r.tokens_cache,
+        r.translated,
+        r.created_at
+    FROM request_logs r
+    LEFT JOIN request_log_bodies b ON b.log_id = r.id
+"""
 
-        # Count total
-        count_query = select(func.count(RequestLog.id))
-        if provider_id:
-            count_query = count_query.where(RequestLog.provider_id == provider_id)
-        if model:
-            count_query = count_query.where(RequestLog.model.contains(model))
-        if is_success is not None:
-            count_query = count_query.where(RequestLog.is_success == is_success)
-        if start_time:
-            count_query = count_query.where(RequestLog.created_at >= start_time)
-        if end_time:
-            count_query = count_query.where(RequestLog.created_at <= end_time)
 
-        total_result = await self.db.execute(count_query)
-        total = total_result.scalar() or 0
+def _upsert_log_bodies(
+    conn: Any,
+    log_id: int,
+    request_body: Optional[str],
+    response_body: Optional[str],
+) -> None:
+    if request_body is None and response_body is None:
+        return
+    conn.execute(
+        """
+        INSERT INTO request_log_bodies (log_id, request_body, response_body)
+        VALUES (?, ?, ?)
+        ON CONFLICT(log_id) DO UPDATE SET
+            request_body = COALESCE(excluded.request_body, request_log_bodies.request_body),
+            response_body = COALESCE(excluded.response_body, request_log_bodies.response_body)
+        """,
+        (log_id, request_body, response_body),
+    )
 
-        # Apply pagination
-        offset = (page - 1) * page_size
-        query = query.offset(offset).limit(page_size)
 
-        result = await self.db.execute(query)
-        logs = result.scalars().all()
-
-        return {
-            "items": logs,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "total_pages": (total + page_size - 1) // page_size,
-        }
-
-    async def get_by_id(self, log_id: int) -> Optional[RequestLog]:
-        """Get a log by ID"""
-        query = select(RequestLog).where(RequestLog.id == log_id)
-        result = await self.db.execute(query)
-        return result.scalar_one_or_none()
-
-    async def cleanup_old_logs(self, retention_days: int) -> int:
-        """Delete logs older than retention_days"""
-        cutoff = datetime.utcnow() - timedelta(days=retention_days)
-
-        # Count before delete
-        count_query = select(func.count(RequestLog.id)).where(
-            RequestLog.created_at < cutoff
+def purge_old_logs() -> None:
+    cutoff = datetime.utcnow() - timedelta(days=_retention_days())
+    cutoff_iso = cutoff.isoformat()
+    with DatabaseSession() as conn:
+        conn.execute(
+            """
+            DELETE FROM request_log_bodies
+            WHERE log_id IN (SELECT id FROM request_logs WHERE created_at < ?)
+            """,
+            (cutoff_iso,),
         )
-        result = await self.db.execute(count_query)
-        count = result.scalar() or 0
-
-        # Delete old logs
-        delete_query = delete(RequestLog).where(RequestLog.created_at < cutoff)
-        await self.db.execute(delete_query)
-        await self.db.commit()
-
-        return count
-
-    async def get_overview_stats(self, days: int = 7) -> dict:
-        """Get overview statistics"""
-        start_time = datetime.utcnow() - timedelta(days=days)
-
-        # Total requests
-        total_query = select(func.count(RequestLog.id)).where(
-            RequestLog.created_at >= start_time
+        conn.execute(
+            """
+            UPDATE request_logs
+            SET request_body = NULL, response_body = NULL
+            WHERE created_at < ?
+              AND (request_body IS NOT NULL OR response_body IS NOT NULL)
+            """,
+            (cutoff_iso,),
         )
-        total_result = await self.db.execute(total_query)
-        total_requests = total_result.scalar() or 0
 
-        # Successful requests
-        success_query = select(func.count(RequestLog.id)).where(
-            RequestLog.created_at >= start_time,
-            RequestLog.is_success == True,
-        )
-        success_result = await self.db.execute(success_query)
-        successful_requests = success_result.scalar() or 0
 
-        # Token stats
-        token_query = select(
-            func.sum(RequestLog.total_tokens),
-            func.avg(RequestLog.latency_ms),
-            func.avg(RequestLog.first_token_latency_ms),
-        ).where(RequestLog.created_at >= start_time)
-        token_result = await self.db.execute(token_query)
-        token_row = token_result.one()
-
-        return {
-            "total_requests": total_requests,
-            "successful_requests": successful_requests,
-            "failed_requests": total_requests - successful_requests,
-            "total_tokens": token_row[0] or 0,
-            "avg_latency_ms": round(token_row[1] or 0, 2),
-            "avg_first_token_latency_ms": round(token_row[2] or 0, 2),
-        }
-
-    async def get_request_stats(self, days: int = 7, interval: str = "day") -> list:
-        """Get request statistics over time"""
-        start_time = datetime.utcnow() - timedelta(days=days)
-
-        # Group by date
-        query = (
-            select(
-                func.date(RequestLog.created_at).label("date"),
-                func.count(RequestLog.id).label("count"),
+def create_log(payload: Dict[str, Any]) -> Dict[str, Any]:
+    now = _utc_now()
+    request_body = payload.get("request_body")
+    response_body = payload.get("response_body")
+    with DatabaseSession() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO request_logs (
+                request_id, model_alias, model_id, provider_id, endpoint,
+                is_streaming, status,
+                latency_ms, first_token_ms, tokens_in, tokens_out,
+                tokens_total, tokens_cache, translated, created_at
             )
-            .where(RequestLog.created_at >= start_time)
-            .group_by(func.date(RequestLog.created_at))
-            .order_by(func.date(RequestLog.created_at))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["request_id"],
+                payload.get("model_alias"),
+                payload.get("model_id"),
+                payload.get("provider_id"),
+                payload["endpoint"],
+                1 if payload.get("is_streaming", False) else 0,
+                payload.get("status", "pending"),
+                payload.get("latency_ms"),
+                payload.get("first_token_ms"),
+                payload.get("tokens_in"),
+                payload.get("tokens_out"),
+                payload.get("tokens_total"),
+                payload.get("tokens_cache"),
+                1 if payload.get("translated", False) else 0,
+                now,
+            ),
         )
+        log_id = cur.lastrowid
+        _upsert_log_bodies(conn, log_id, request_body, response_body)
+    return get_log(log_id)
 
-        result = await self.db.execute(query)
-        rows = result.all()
 
-        return [
-            {"timestamp": str(row[0]), "value": row[1]}
-            for row in rows
-        ]
+def update_log(log_id: int, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    fields = []
+    values = []
+    for key in [
+        "model_alias",
+        "model_id",
+        "provider_id",
+        "endpoint",
+        "is_streaming",
+        "status",
+        "latency_ms",
+        "first_token_ms",
+        "tokens_in",
+        "tokens_out",
+        "tokens_total",
+        "tokens_cache",
+        "translated",
+    ]:
+        if key in payload and payload[key] is not None:
+            fields.append(f"{key} = ?")
+            if key in ("is_streaming", "translated"):
+                values.append(1 if payload[key] else 0)
+            else:
+                values.append(payload[key])
 
-    async def get_token_stats(self, days: int = 7) -> dict:
-        """Get token consumption statistics"""
-        start_time = datetime.utcnow() - timedelta(days=days)
-
-        query = select(
-            func.sum(RequestLog.input_tokens),
-            func.sum(RequestLog.output_tokens),
-            func.sum(RequestLog.cache_tokens),
-        ).where(RequestLog.created_at >= start_time)
-
-        result = await self.db.execute(query)
-        row = result.one()
-
-        return {
-            "total_input": row[0] or 0,
-            "total_output": row[1] or 0,
-            "total_cache": row[2] or 0,
-        }
-
-    async def get_provider_stats(self, days: int = 7) -> list:
-        """Get statistics by provider"""
-        start_time = datetime.utcnow() - timedelta(days=days)
-
-        query = (
-            select(
-                RequestLog.provider_id,
-                RequestLog.provider_name,
-                func.count(RequestLog.id).label("request_count"),
-                func.avg(
-                    func.cast(RequestLog.is_success, func.Integer)
-                ).label("success_rate"),
-                func.avg(RequestLog.latency_ms).label("avg_latency"),
-                func.sum(RequestLog.total_tokens).label("total_tokens"),
+    request_body = payload.get("request_body")
+    response_body = payload.get("response_body")
+    if not fields and request_body is None and response_body is None:
+        return get_log(log_id)
+    with DatabaseSession() as conn:
+        if fields:
+            values.append(log_id)
+            conn.execute(
+                f"UPDATE request_logs SET {', '.join(fields)} WHERE id = ?",
+                tuple(values),
             )
-            .where(RequestLog.created_at >= start_time)
-            .group_by(RequestLog.provider_id, RequestLog.provider_name)
-        )
+        _upsert_log_bodies(conn, log_id, request_body, response_body)
+    return get_log(log_id)
 
-        result = await self.db.execute(query)
-        rows = result.all()
 
-        return [
-            {
-                "provider_id": row[0],
-                "provider_name": row[1] or "Unknown",
-                "request_count": row[2],
-                "success_rate": round((row[3] or 0) * 100, 2),
-                "avg_latency_ms": round(row[4] or 0, 2),
-                "total_tokens": row[5] or 0,
-            }
-            for row in rows
-        ]
+def get_log(log_id: int) -> Optional[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        row = conn.execute(
+            _LOG_SELECT_SQL + " WHERE r.id = ?",
+            (log_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_logs(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            _LOG_SELECT_SQL + " ORDER BY r.id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def metrics_summary() -> Dict[str, Any]:
+    with DatabaseReadOnlySession() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS request_count,
+                COALESCE(SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0) AS error_count,
+                AVG(latency_ms) AS avg_latency_ms,
+                COALESCE(
+                    SUM(
+                        COALESCE(tokens_total, COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0))
+                    ),
+                    0
+                ) AS tokens_total
+            FROM request_logs
+            """
+        ).fetchone()
+
+    data = dict(row) if row else None
+    return data or {
+        "request_count": 0,
+        "success_count": 0,
+        "error_count": 0,
+        "avg_latency_ms": None,
+        "tokens_total": 0,
+    }
+
+
+def metrics_by_provider() -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                provider_id,
+                COUNT(*) AS request_count,
+                SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
+                AVG(latency_ms) AS avg_latency_ms
+            FROM request_logs
+            GROUP BY provider_id
+            ORDER BY request_count DESC
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def metrics_top_models(limit: int = 10) -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                COALESCE(model_alias, model_id, 'unknown') AS label,
+                COUNT(*) AS request_count,
+                COALESCE(
+                    SUM(
+                        COALESCE(tokens_total, COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0))
+                    ),
+                    0
+                ) AS token_count
+            FROM request_logs
+            GROUP BY COALESCE(model_alias, model_id, 'unknown')
+            ORDER BY request_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def metrics_top_providers(limit: int = 10) -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                COALESCE(p.name, 'unknown') AS label,
+                COUNT(*) AS request_count,
+                COALESCE(
+                    SUM(
+                        COALESCE(r.tokens_total, COALESCE(r.tokens_in, 0) + COALESCE(r.tokens_out, 0))
+                    ),
+                    0
+                ) AS token_count
+            FROM request_logs r
+            LEFT JOIN providers p ON p.id = r.provider_id
+            GROUP BY COALESCE(p.name, 'unknown')
+            ORDER BY request_count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def metrics_by_date(limit: int = 10) -> List[Dict[str, Any]]:
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                substr(created_at, 1, 10) AS label,
+                COUNT(*) AS request_count,
+                COALESCE(
+                    SUM(
+                        COALESCE(tokens_total, COALESCE(tokens_in, 0) + COALESCE(tokens_out, 0))
+                    ),
+                    0
+                ) AS token_count
+            FROM request_logs
+            GROUP BY label
+            ORDER BY label DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
