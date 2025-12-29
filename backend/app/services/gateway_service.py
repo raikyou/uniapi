@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 import uuid
 import urllib.parse
@@ -36,6 +37,7 @@ HOP_BY_HOP_HEADERS = {
 }
 AUTH_HEADERS = {"authorization", "x-api-key", "x-goog-api-key"}
 REQUEST_ID_HEADER = "X-Request-Id"
+NON_FREEZE_ERROR_CODES = {"model_not_found", "invalid_request"}
 
 
 @dataclass
@@ -80,6 +82,51 @@ def _append_query(url: str, query_string: str) -> str:
     )
 
 
+def _order_providers(providers: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    buckets: Dict[int, list[Dict[str, Any]]] = {}
+    for provider in providers:
+        try:
+            priority = int(provider.get("priority") or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        buckets.setdefault(priority, []).append(provider)
+    ordered: list[Dict[str, Any]] = []
+    for priority in sorted(buckets.keys(), reverse=True):
+        group = list(buckets[priority])
+        random.shuffle(group)
+        ordered.extend(group)
+    return ordered
+
+
+def _extract_error_code(body: Optional[str]) -> Optional[str]:
+    if not body:
+        return None
+    stripped = body.lstrip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        code = parsed.get("code")
+        if isinstance(code, str):
+            return code
+        error = parsed.get("error")
+        if isinstance(error, dict):
+            code = error.get("code") or error.get("type")
+            if isinstance(code, str):
+                return code
+    return None
+
+
+def _is_non_freeze_error(body: Optional[str]) -> bool:
+    code = _extract_error_code(body)
+    if not code:
+        return False
+    return code.strip().lower() in NON_FREEZE_ERROR_CODES
+
+
 def _classify_status_error(
     status_code: int,
     body: Optional[str],
@@ -88,6 +135,7 @@ def _classify_status_error(
     media_type: Optional[str] = None,
 ) -> ErrorDecision:
     error_body = body or ""
+    non_freeze = _is_non_freeze_error(error_body)
     if 400 <= status_code < 500:
         return ErrorDecision(
             status_code=status_code,
@@ -102,7 +150,7 @@ def _classify_status_error(
         status_code=status_code,
         error_body=error_body,
         retryable=True,
-        freeze=True,
+        freeze=not non_freeze,
         allow_passthrough=True,
         response_headers=response_headers,
         media_type=media_type,
@@ -160,6 +208,7 @@ def _classify_exception(exc: Exception) -> ErrorDecision:
     if error_body is None:
         error_body = str(exc)
         allow_passthrough = False
+    non_freeze = _is_non_freeze_error(error_body)
     if 400 <= status_code < 500:
         return ErrorDecision(
             status_code=status_code,
@@ -174,7 +223,7 @@ def _classify_exception(exc: Exception) -> ErrorDecision:
         status_code=status_code,
         error_body=error_body,
         retryable=True,
-        freeze=True,
+        freeze=not non_freeze,
         allow_passthrough=allow_passthrough,
         response_headers=response_headers,
         media_type=media_type,
@@ -439,7 +488,7 @@ async def _process_gateway_request(
         )
 
     try:
-        providers = provider_service.list_providers()
+        providers = _order_providers(provider_service.list_providers())
         last_error = None
         last_error_status = None
         last_provider_id = None

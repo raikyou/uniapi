@@ -43,6 +43,26 @@ export default function AppLayout() {
     void loadConfigs()
   }, [])
 
+  useEffect(() => {
+    const handleConfigUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        freezeDurationSeconds?: string
+        logRetentionDays?: string
+      }>).detail
+      if (!detail) {
+        return
+      }
+      if (detail.freezeDurationSeconds) {
+        setFreezeDurationSeconds(detail.freezeDurationSeconds)
+      }
+      if (detail.logRetentionDays) {
+        setLogRetentionDays(detail.logRetentionDays)
+      }
+    }
+    window.addEventListener("uniapi:config-updated", handleConfigUpdated)
+    return () => window.removeEventListener("uniapi:config-updated", handleConfigUpdated)
+  }, [])
+
   return (
     <div className="h-screen overflow-hidden bg-[radial-gradient(circle_at_top,_var(--background),_var(--muted)_42%,_var(--secondary)_100%)]">
       <div className="grid h-screen grid-cols-[240px_1fr] gap-6 px-6 py-8">

@@ -38,6 +38,14 @@ export default function Settings() {
         { key: "freeze_duration_seconds", value: freezeDuration },
         { key: "log_retention_days", value: logRetention },
       ])
+      window.dispatchEvent(
+        new CustomEvent("uniapi:config-updated", {
+          detail: {
+            freezeDurationSeconds: freezeDuration,
+            logRetentionDays: logRetention,
+          },
+        })
+      )
       setSaved(true)
       setTimeout(() => setSaved(false), 1200)
     } catch (err) {
