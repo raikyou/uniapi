@@ -1,40 +1,19 @@
-# Stage 1: Build frontend
-FROM node:20-alpine AS frontend-builder
-
-WORKDIR /frontend
-
-COPY frontend/package*.json ./
+FROM node:20-slim AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: Build backend
-FROM ghcr.io/astral-sh/uv:python3.12-alpine
-
+FROM python:3.11-slim AS backend
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-
-WORKDIR /app
-
-# Copy Python project files
-COPY pyproject.toml uv.lock README.md ./
-COPY uniapi ./uniapi
-
-# Copy frontend build artifacts (built to /uniapi/static from vite.config.ts)
-COPY --from=frontend-builder /uniapi/static ./uniapi/static
-
-# Install Python dependencies
-RUN uv sync --frozen --no-dev --no-editable
-
-ENV VIRTUAL_ENV=/app/.venv
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Setup config directory
-RUN mkdir -p /config
-COPY config.yaml.template /config/config.yaml
-
+WORKDIR /app/backend
+RUN pip install --no-cache-dir uv
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN UV_SYSTEM_PYTHON=1 uv sync --frozen --no-dev
+ENV PATH="/app/backend/.venv/bin:$PATH"
+COPY backend/app ./app
+COPY --from=frontend-builder /app/frontend/dist ./app/static
 EXPOSE 8000
-
-ENTRYPOINT ["uniapi"]
-CMD ["--config", "/config/config.yaml", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

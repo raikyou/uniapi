@@ -1,36 +1,21 @@
-# Python cache and bytecode
-__pycache__/
-.pytest_cache/
-.pycache/
-*.py[cod]
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Environment variables / secrets
+.DS_Store
 .env
 .env.*
 
-# Build / distribution artefacts
-dist/
-build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
 *.egg-info/
-static/
 
-# Coverage / test output
-.coverage*
-coverage.xml
-htmlcov/
+*.db
+backend/app/data/*.sqlite
+backend/app/data/*.sqlite3
+*.log
 
-# Tooling caches
-.mypy_cache/
-.ruff_cache/
+node_modules/
+frontend/dist/
+frontend/.vite/
 
-# macOS metadata
-.DS_Store
-
-*.yaml
-.uv-cache/
-
+.tmp
