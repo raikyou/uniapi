@@ -1,11 +1,25 @@
 import { Fragment, useEffect, useMemo, useState } from "react"
-import { Activity, ChevronLeft, ChevronRight, Copy, List, RefreshCcw } from "lucide-react"
+import {
+  Activity,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Filter,
+  List,
+  RefreshCcw,
+} from "lucide-react"
 
 import { api } from "@/lib/api"
 import type { LogEntry, Provider } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Select,
   SelectContent,
@@ -28,23 +42,28 @@ export default function Logs() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null)
+  const [logDetail, setLogDetail] = useState<LogEntry | null>(null)
+  const [logDetailLoading, setLogDetailLoading] = useState(false)
   const [responseView, setResponseView] = useState<"pretty" | "raw">("pretty")
+  const [statusFilter, setStatusFilter] = useState("all")
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(50)
+  const [pageSize, setPageSize] = useState(20)
   const [hasNextPage, setHasNextPage] = useState(false)
   const pageSizeOptions = [10, 20, 50, 100]
+  const statusFilterActive = statusFilter !== "all"
 
   useEffect(() => {
-    void loadLogs(page, pageSize)
-  }, [page, pageSize])
+    void loadLogs(page, pageSize, statusFilter)
+  }, [page, pageSize, statusFilter])
 
-  const loadLogs = async (pageIndex: number, size: number) => {
+  const loadLogs = async (pageIndex: number, size: number, status: string) => {
     setLoading(true)
     setError(null)
     try {
       const offset = (pageIndex - 1) * size
+      const statusValue = status === "all" ? undefined : status
       const [logData, providerData] = await Promise.all([
-        api.listLogs(size, offset),
+        api.listLogs(size, offset, false, statusValue),
         api.listProviders(1000, 0),
       ])
       setLogs(logData as LogEntry[])
@@ -108,177 +127,9 @@ export default function Logs() {
     setPageSize(nextSize)
   }
 
-  const extractUsage = (payload: Record<string, unknown>) => {
-    const pick = (primary?: number | null, fallback?: number | null) =>
-      primary ?? fallback ?? null
-    let tokensIn: number | null = null
-    let tokensOut: number | null = null
-    let tokensTotal: number | null = null
-    let tokensCache: number | null = null
-
-    const usage = payload.usage
-    if (usage && typeof usage === "object") {
-      const usageObj = usage as Record<string, number | Record<string, number>>
-      tokensIn = pick(usageObj.prompt_tokens as number, usageObj.input_tokens as number)
-      tokensOut = pick(
-        usageObj.completion_tokens as number,
-        usageObj.output_tokens as number
-      )
-      tokensTotal = (usageObj.total_tokens as number) ?? null
-      const details = usageObj.prompt_tokens_details
-      if (details && typeof details === "object") {
-        const detailObj = details as Record<string, number>
-        tokensCache = detailObj.cached_tokens ?? null
-      }
-      tokensCache =
-        tokensCache ??
-        pick(usageObj.cache_read_input_tokens as number, usageObj.cached_tokens as number)
-    }
-
-    const usageMeta = (payload.usageMetadata || payload.usage_metadata) as
-      | Record<string, number>
-      | undefined
-    if (usageMeta) {
-      tokensIn = pick(tokensIn, pick(usageMeta.promptTokenCount, usageMeta.prompt_tokens))
-      tokensOut = pick(
-        tokensOut,
-        pick(usageMeta.candidatesTokenCount, usageMeta.completion_tokens)
-      )
-      tokensTotal = pick(tokensTotal, pick(usageMeta.totalTokenCount, usageMeta.total_tokens))
-    }
-
-    return {
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
-      tokens_total: tokensTotal,
-      tokens_cache: tokensCache,
-    }
-  }
-
-  const extractContentFromChunk = (chunk: Record<string, unknown>) => {
-    const choices = chunk.choices
-    if (Array.isArray(choices)) {
-      let text = ""
-      let hasDelta = false
-      let hasMessage = false
-      for (const choice of choices) {
-        if (!choice || typeof choice !== "object") continue
-        const choiceObj = choice as Record<string, unknown>
-        const delta = choiceObj.delta
-        if (delta && typeof delta === "object") {
-          hasDelta = true
-          const deltaObj = delta as Record<string, unknown>
-          if (typeof deltaObj.content === "string") {
-            text += deltaObj.content
-          }
-        } else if (choiceObj.message && typeof choiceObj.message === "object") {
-          hasMessage = true
-          const messageObj = choiceObj.message as Record<string, unknown>
-          if (typeof messageObj.content === "string") {
-            text += messageObj.content
-          }
-        } else if (typeof choiceObj.text === "string") {
-          text += choiceObj.text
-        }
-      }
-      return { text, hasDelta, hasMessage }
-    }
-    if (typeof chunk.output_text === "string") {
-      return { text: chunk.output_text, hasDelta: false, hasMessage: false }
-    }
-    return { text: "", hasDelta: false, hasMessage: false }
-  }
-
-  const parseResponseBody = (body?: string | null) => {
-    if (!body) {
-      return { finalText: "", usage: null, chunks: [] as Record<string, unknown>[] }
-    }
-    const trimmed = body.trim()
-    if (!trimmed) {
-      return { finalText: "", usage: null, chunks: [] as Record<string, unknown>[] }
-    }
-
-    const collect = (chunks: Record<string, unknown>[]) => {
-      let finalText = ""
-      let usage: ReturnType<typeof extractUsage> | null = null
-      let hasDelta = false
-      let hasMessage = false
-      for (const chunk of chunks) {
-        const result = extractContentFromChunk(chunk)
-        finalText += result.text
-        hasDelta = hasDelta || result.hasDelta
-        hasMessage = hasMessage || result.hasMessage
-        const nextUsage = extractUsage(chunk)
-        if (
-          nextUsage.tokens_in !== null ||
-          nextUsage.tokens_out !== null ||
-          nextUsage.tokens_total !== null ||
-          nextUsage.tokens_cache !== null
-        ) {
-          usage = nextUsage
-        }
-      }
-      return { finalText, usage, chunks, hasDelta, hasMessage }
-    }
-
-    if (trimmed.startsWith("[")) {
-      try {
-        const parsed = JSON.parse(trimmed)
-        if (Array.isArray(parsed)) {
-          return collect(parsed.filter((item) => item && typeof item === "object") as Record<
-            string,
-            unknown
-          >[])
-        }
-      } catch {
-        return { finalText: "", usage: null, chunks: [] as Record<string, unknown>[] }
-      }
-    }
-
-    if (trimmed.startsWith("{")) {
-      try {
-        const parsed = JSON.parse(trimmed)
-        if (parsed && typeof parsed === "object") {
-          const payload = parsed as Record<string, unknown>
-          return {
-            finalText: extractContentFromChunk(payload).text,
-            usage: extractUsage(payload),
-            chunks: [payload],
-            hasDelta: false,
-            hasMessage: false,
-          }
-        }
-      } catch {
-        return { finalText: "", usage: null, chunks: [] as Record<string, unknown>[] }
-      }
-    }
-
-    if (trimmed.includes("data:")) {
-      const chunks: Record<string, unknown>[] = []
-      const blocks = trimmed.split("\n\n")
-      for (const block of blocks) {
-        const lines = block.split("\n")
-        for (const line of lines) {
-          const match = line.match(/^data:\s*(.+)$/)
-          if (!match) continue
-          const payload = match[1].trim()
-          if (!payload || payload === "[DONE]") {
-            continue
-          }
-          try {
-            const parsed = JSON.parse(payload)
-            if (parsed && typeof parsed === "object") {
-              chunks.push(parsed)
-            }
-          } catch {
-            continue
-          }
-        }
-      }
-      return collect(chunks)
-    }
-
-    return { finalText: "", usage: null, chunks: [] as Record<string, unknown>[] }
+  const handleStatusChange = (value: string) => {
+    setPage(1)
+    setStatusFilter(value)
   }
 
   const selectedLog = useMemo(
@@ -292,8 +143,24 @@ export default function Logs() {
     }
   }, [expandedLogId])
 
-  const rawResponseBody = selectedLog?.response_body ?? "—"
-  const prettyResponseBody = selectedLog ? formatBody(selectedLog.response_body) : "—"
+  useEffect(() => {
+    if (!expandedLogId) {
+      setLogDetail(null)
+      setLogDetailLoading(false)
+      return
+    }
+    setLogDetailLoading(true)
+    api
+      .getLog(expandedLogId)
+      .then((data) => setLogDetail(data as LogEntry))
+      .catch((err) => setError((err as Error).message))
+      .finally(() => setLogDetailLoading(false))
+  }, [expandedLogId])
+
+  const activeLog = logDetail ?? selectedLog
+  const rawResponseBody =
+    activeLog?.response_body ?? (logDetailLoading ? "Loading..." : "—")
+  const prettyResponseBody = activeLog ? formatBody(activeLog.response_body) : "—"
   const responseBody = responseView === "raw" ? rawResponseBody : prettyResponseBody
 
   return (
@@ -302,7 +169,7 @@ export default function Logs() {
         <Button
           variant="outline"
           className="gap-2"
-          onClick={() => loadLogs(page, pageSize)}
+          onClick={() => loadLogs(page, pageSize, statusFilter)}
         >
           <RefreshCcw className="h-4 w-4" />
           Refresh
@@ -331,7 +198,50 @@ export default function Logs() {
                     <TableHead>Streaming</TableHead>
                     <TableHead>Provider</TableHead>
                     <TableHead>Translate</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead>
+                      <div className="inline-flex items-center gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-foreground/80">
+                          Status
+                        </span>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button
+                              type="button"
+                              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted/70 hover:text-foreground"
+                              aria-label="Filter status"
+                            >
+                              <Filter
+                                className={
+                                  statusFilterActive
+                                    ? "h-3.5 w-3.5 text-foreground"
+                                    : "h-3.5 w-3.5"
+                                }
+                              />
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start">
+                            {[
+                              { value: "all", label: "All" },
+                              { value: "success", label: "Success" },
+                              { value: "error", label: "Error" },
+                              { value: "pending", label: "Pending" },
+                            ].map((option) => (
+                              <DropdownMenuItem
+                                key={option.value}
+                                onSelect={() => handleStatusChange(option.value)}
+                                className={
+                                  statusFilter === option.value
+                                    ? "bg-accent text-accent-foreground"
+                                    : undefined
+                                }
+                              >
+                                {option.label}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </TableHead>
                     <TableHead>Latency</TableHead>
                     <TableHead>First Token</TableHead>
                     <TableHead>Input</TableHead>
@@ -347,11 +257,9 @@ export default function Logs() {
                       log.provider_id && providerMap[log.provider_id]
                         ? providerMap[log.provider_id].name
                         : "Unknown"
-                    const parsedResponse = parseResponseBody(log.response_body)
-                    const derivedUsage = parsedResponse.usage
-                    const tokensIn = log.tokens_in ?? derivedUsage?.tokens_in ?? "-"
-                    const tokensOut = log.tokens_out ?? derivedUsage?.tokens_out ?? "-"
-                    const tokensTotal = log.tokens_total ?? derivedUsage?.tokens_total ?? "-"
+                    const tokensIn = log.tokens_in ?? "-"
+                    const tokensOut = log.tokens_out ?? "-"
+                    const tokensTotal = log.tokens_total ?? "-"
                     return (
                       <Fragment key={log.id}>
                         <TableRow className="text-sm">
@@ -477,7 +385,7 @@ export default function Logs() {
         </CardContent>
       </Card>
 
-      {selectedLog && (
+      {expandedLogId && (
         <div className="fixed inset-0 z-50">
           <div
             className="absolute inset-0 bg-black/30"
@@ -487,7 +395,7 @@ export default function Logs() {
             <div className="flex items-center justify-between border-b px-5 py-4">
               <div>
                 <div className="text-sm text-muted-foreground">Log</div>
-                <div className="text-lg font-semibold">#{selectedLog.id}</div>
+                <div className="text-lg font-semibold">#{expandedLogId}</div>
               </div>
               <Button variant="ghost" onClick={() => setExpandedLogId(null)}>
                 Close
@@ -504,12 +412,24 @@ export default function Logs() {
                     size="icon"
                     className="absolute right-2 top-2 h-7 w-7"
                     aria-label="Copy request"
-                    onClick={() => handleCopy(formatBody(selectedLog.request_body))}
+                    onClick={() =>
+                      handleCopy(
+                        activeLog
+                          ? formatBody(activeLog.request_body)
+                          : logDetailLoading
+                          ? "Loading..."
+                          : "—"
+                      )
+                    }
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
                   <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-3 text-xs">
-                    {formatBody(selectedLog.request_body)}
+                    {activeLog
+                      ? formatBody(activeLog.request_body)
+                      : logDetailLoading
+                      ? "Loading..."
+                      : "—"}
                   </pre>
                 </div>
               </div>

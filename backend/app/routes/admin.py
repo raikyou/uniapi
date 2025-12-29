@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -248,7 +248,7 @@ async def test_model(provider_id: int, model_id: int, _: None = Depends(require_
             tps = tokens_out / (latency_ms / 1000)
         provider_service.update_provider_test_performance(
             provider_id,
-            last_tested_at=datetime.utcnow().isoformat(),
+            last_tested_at=datetime.now(timezone.utc).isoformat(),
             last_ftl_ms=latency_ms,
             last_tps=tps,
         )
@@ -271,12 +271,33 @@ async def test_model(provider_id: int, model_id: int, _: None = Depends(require_
 
 
 @router.get("/logs", response_model=List[LogEntryOut])
-async def list_logs(limit: int = 50, offset: int = 0, _: None = Depends(require_admin)):
-    logs = log_service.list_logs(limit=limit, offset=offset)
+async def list_logs(
+    limit: int = 20,
+    offset: int = 0,
+    include_bodies: bool = True,
+    status: Optional[str] = None,
+    _: None = Depends(require_admin),
+):
+    logs = log_service.list_logs(
+        limit=limit,
+        offset=offset,
+        include_bodies=include_bodies,
+        status=status,
+    )
     for log in logs:
         log["is_streaming"] = bool(log["is_streaming"])
         log["translated"] = bool(log["translated"])
     return logs
+
+
+@router.get("/logs/{log_id}", response_model=LogEntryOut)
+async def get_log(log_id: int, _: None = Depends(require_admin)):
+    log = log_service.get_log(log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail="log not found")
+    log["is_streaming"] = bool(log["is_streaming"])
+    log["translated"] = bool(log["translated"])
+    return log
 
 
 @router.get("/metrics/summary", response_model=MetricsSummary)

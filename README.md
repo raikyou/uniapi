@@ -1,29 +1,34 @@
-# UniAPI
+# UniAPI - LLM统一网关
 
-## Docker
+统一管理多个LLM providers，对外暴露单一API接口。
 
-Build the single-image bundle (frontend + backend):
+## 功能特性
 
-```sh
-docker build -t uniapi .
+- **统一API**: OpenAI兼容格式，支持chat/completions、embeddings、images/generations
+- **多Provider支持**: OpenAI, Anthropic, Gemini, Groq, DeepSeek, Mistral等
+- **自动故障转移**: 按优先级自动切换Provider
+- **透传模式**: 非openai格式调用都走透传，只替换API Key，不做格式转换
+- **Provider冻结**: 失败自动冻结，可配置冻结时长
+- **请求日志**: 完整记录请求/响应，支持统计分析
+
+## 快速开始
+
+### 方式1: 本地开发
+
+#### 手动运行
+```bash
+cd backend
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Run on port 8000 (dashboard and gateway share the same port):
+### 方式2: Docker
 
-```sh
-docker run --rm -p 8000:8000 -e API_KEY=your-key uniapi
-```
-
-Persist the SQLite database and request/response logs:
-
-```sh
+```bash
 docker run --rm -p 8000:8000 \
   -e API_KEY=your-key \
   -v "$(pwd)/data:/app/backend/app/data" \
   uniapi
 ```
-
-## Configuration
 
 Environment variables:
 
@@ -32,10 +37,7 @@ Environment variables:
 - `UNIAPI_LOG_RETENTION_DAYS`: days to keep request/response bodies (default: 7).
 - `UNIAPI_FREEZE_DURATION_SECONDS`: provider freeze duration (default: 600).
 
-## Development
+## API文档
 
-The frontend defaults to same-origin API calls. For local dev with separate hosts, set:
+启动后访问: http://localhost:8000/docs
 
-```
-VITE_API_BASE=http://127.0.0.1:8000
-```

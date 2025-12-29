@@ -400,9 +400,19 @@ async def _process_gateway_request(
     if protocol == "gemini" and _is_gemini_stream_path(path):
         stream = True
 
+    requested_model = None
+    if isinstance(json_body, dict):
+        requested_model = json_body.get("model")
+    path_model = _extract_model_from_path(path)
+    if protocol == "gemini" and path_model:
+        requested_model = path_model[1]
+    elif not requested_model and path_model:
+        requested_model = path_model[1]
+
     log_entry = log_service.create_log(
         {
             "request_id": request_id,
+            "model_id": requested_model,
             "endpoint": path,
             "request_body": body_bytes.decode("utf-8", errors="replace") if body_bytes else None,
             "status": "pending",
@@ -428,129 +438,313 @@ async def _process_gateway_request(
             error_code="invalid_json",
         )
 
-    providers = provider_service.list_providers()
-    last_error = None
-    last_error_status = None
-    last_provider_id = None
-    last_model_alias = None
-    last_model_id = None
-    last_translated = False
-    last_error_headers = None
-    last_error_media_type = None
-    last_error_allow_passthrough = False
-    requested_model = None
-    if isinstance(json_body, dict):
-        requested_model = json_body.get("model")
-    path_model = _extract_model_from_path(path)
-    if protocol == "gemini" and path_model:
-        requested_model = path_model[1]
-    elif not requested_model and path_model:
-        requested_model = path_model[1]
-    model_match_seen = False
+    try:
+        providers = provider_service.list_providers()
+        last_error = None
+        last_error_status = None
+        last_provider_id = None
+        last_model_alias = None
+        last_model_id = None
+        last_translated = False
+        last_error_headers = None
+        last_error_media_type = None
+        last_error_allow_passthrough = False
+        model_match_seen = False
 
-    for provider in providers:
-        if not provider.get("enabled"):
-            continue
-
-        match = None
-        if requested_model:
-            for candidate in _model_match_candidates(requested_model, protocol):
-                match = provider_service.find_model_match(provider["id"], candidate)
-                if match:
-                    model_match_seen = True
-                    break
-
-        if freeze_manager.is_frozen(provider["id"]):
-            continue
-
-        translated = False
-        request_body_bytes = body_bytes
-        request_path = path
-        request_json = json_body
-
-        model_alias = None
-        model_id = None
-        if protocol == "openai":
-            if not requested_model:
-                return _finalize_error(
-                    ctx,
-                    status_code=400,
-                    error_body="missing model",
-                    provider_id=provider["id"],
-                    model_alias=None,
-                    model_id=None,
-                    translated=translated,
-                    protocol=protocol,
-                    error_code="missing_model",
-                )
-            if not match:
+        for provider in providers:
+            if not provider.get("enabled"):
                 continue
-            model_alias = match.get("alias")
-            model_id = match.get("model_id")
-            if isinstance(request_json, dict):
-                model_name = request_json.get("model")
-                if model_name:
-                    request_json = dict(request_json)
-                    request_json["model"] = model_id
-                    request_body_bytes = json.dumps(request_json).encode("utf-8")
+
+            match = None
+            if requested_model:
+                for candidate in _model_match_candidates(requested_model, protocol):
+                    match = provider_service.find_model_match(provider["id"], candidate)
+                    if match:
+                        model_match_seen = True
+                        break
+
+            if freeze_manager.is_frozen(provider["id"]):
+                continue
+
+            translated = False
+            request_body_bytes = body_bytes
+            request_path = path
+            request_json = json_body
+
+            model_alias = None
+            model_id = None
+            if protocol == "openai":
+                if not requested_model:
+                    return _finalize_error(
+                        ctx,
+                        status_code=400,
+                        error_body="missing model",
+                        provider_id=provider["id"],
+                        model_alias=None,
+                        model_id=None,
+                        translated=translated,
+                        protocol=protocol,
+                        error_code="missing_model",
+                    )
+                if not match:
+                    continue
+                model_alias = match.get("alias")
+                model_id = match.get("model_id")
+                if isinstance(request_json, dict):
+                    model_name = request_json.get("model")
+                    if model_name:
+                        request_json = dict(request_json)
+                        request_json["model"] = model_id
+                        request_body_bytes = json.dumps(request_json).encode("utf-8")
+                    elif path_model:
+                        prefix, path_model_name, suffix = path_model
+                        if model_id and model_id != path_model_name:
+                            encoded_model_id = urllib.parse.quote(model_id, safe=":/")
+                            request_path = f"{prefix}{encoded_model_id}{suffix}"
                 elif path_model:
                     prefix, path_model_name, suffix = path_model
                     if model_id and model_id != path_model_name:
                         encoded_model_id = urllib.parse.quote(model_id, safe=":/")
                         request_path = f"{prefix}{encoded_model_id}{suffix}"
-            elif path_model:
-                prefix, path_model_name, suffix = path_model
-                if model_id and model_id != path_model_name:
-                    encoded_model_id = urllib.parse.quote(model_id, safe=":/")
-                    request_path = f"{prefix}{encoded_model_id}{suffix}"
-        else:
-            if requested_model and not match:
-                continue
-            if match:
-                model_id = match.get("model_id") or requested_model
-            elif requested_model:
-                model_id = requested_model
+            else:
+                if requested_model and not match:
+                    continue
+                if match:
+                    model_id = match.get("model_id") or requested_model
+                elif requested_model:
+                    model_id = requested_model
 
-        if (
-            protocol == "openai"
-            and provider.get("type") != "openai"
-            and provider.get("translate_enabled")
-        ):
-            if not isinstance(request_json, dict):
-                return _finalize_error(
-                    ctx,
-                    status_code=400,
-                    error_body="translation requires json body",
-                    provider_id=provider["id"],
-                    model_alias=model_alias,
-                    model_id=model_id,
-                    translated=translated,
-                    protocol=protocol,
-                    error_code="invalid_request",
-                )
+            if (
+                protocol == "openai"
+                and provider.get("type") != "openai"
+                and provider.get("translate_enabled")
+            ):
+                if not isinstance(request_json, dict):
+                    return _finalize_error(
+                        ctx,
+                        status_code=400,
+                        error_body="translation requires json body",
+                        provider_id=provider["id"],
+                        model_alias=model_alias,
+                        model_id=model_id,
+                        translated=translated,
+                        protocol=protocol,
+                        error_code="invalid_request",
+                    )
 
-            translated = True
-            model_name = request_json.get("model")
-            if not model_name:
-                return _finalize_error(
-                    ctx,
-                    status_code=400,
-                    error_body="missing model for translation",
-                    provider_id=provider["id"],
-                    model_alias=model_alias,
-                    model_id=model_id,
-                    translated=translated,
-                    protocol=protocol,
-                    error_code="missing_model",
+                translated = True
+                model_name = request_json.get("model")
+                if not model_name:
+                    return _finalize_error(
+                        ctx,
+                        status_code=400,
+                        error_body="missing model for translation",
+                        provider_id=provider["id"],
+                        model_alias=model_alias,
+                        model_id=model_id,
+                        translated=translated,
+                        protocol=protocol,
+                        error_code="missing_model",
+                    )
+
+                try:
+                    response = await litellm_completion(
+                        provider=provider,
+                        request_json=request_json,
+                        stream=stream,
+                    )
+                except Exception as exc:
+                    decision = _classify_exception(exc)
+                    if decision.freeze:
+                        freeze_manager.freeze(provider["id"])
+                    if not decision.retryable:
+                        return _finalize_error(
+                            ctx,
+                            status_code=decision.status_code,
+                            error_body=decision.error_body,
+                            provider_id=provider["id"],
+                            model_alias=model_alias,
+                            model_id=model_id,
+                            translated=translated,
+                            protocol=protocol,
+                            response_headers=decision.response_headers,
+                            media_type=decision.media_type,
+                            allow_passthrough=decision.allow_passthrough,
+                        )
+                    last_error = decision.error_body
+                    last_error_status = decision.status_code
+                    last_provider_id = provider["id"]
+                    last_model_alias = model_alias
+                    last_model_id = model_id
+                    last_translated = translated
+                    last_error_headers = decision.response_headers
+                    last_error_media_type = decision.media_type
+                    last_error_allow_passthrough = decision.allow_passthrough
+                    continue
+
+                if stream:
+                    streaming = await litellm_streaming_response(
+                        response=response,
+                        provider_id=provider["id"],
+                        log_id=log_entry["id"],
+                        model_alias=model_alias,
+                        model_id=model_id,
+                        translated=translated,
+                        start_time=start_time,
+                        protocol=protocol,
+                        extra_headers=_with_request_id(None, ctx.request_id),
+                    )
+                    if ctx.return_response:
+                        return {
+                            "response": streaming,
+                            "status": "success",
+                            "latency_ms": None,
+                            "first_token_ms": None,
+                        }
+
+                    return {
+                        "status": "success",
+                        "latency_ms": None,
+                        "first_token_ms": None,
+                    }
+
+                latency_ms = ctx.latency_ms()
+                response_payload = litellm_service._response_to_dict(response)
+                response_body = json.dumps(response_payload, ensure_ascii=True)
+                usage_stats = litellm_service._extract_usage(
+                    response_payload if isinstance(response_payload, dict) else {}
                 )
+                log_service.update_log(
+                    log_entry["id"],
+                    {
+                        "status": "success",
+                        "response_body": response_body,
+                        "latency_ms": latency_ms,
+                        "provider_id": provider["id"],
+                        "model_alias": model_alias,
+                        "model_id": model_id,
+                        "translated": translated,
+                        **usage_stats,
+                    },
+                )
+                if ctx.return_response:
+                    return {
+                        "response": Response(
+                            content=response_body.encode("utf-8"),
+                            status_code=200,
+                            headers=_with_request_id(None, ctx.request_id),
+                            media_type="application/json",
+                        ),
+                        "status": "success",
+                        "latency_ms": latency_ms,
+                        "first_token_ms": None,
+                    }
+
+                return {
+                    "status": "success",
+                    "latency_ms": latency_ms,
+                    "first_token_ms": None,
+                }
+
+            url = join_base_url(provider["base_url"], request_path)
+            url = _append_query(url, query_string)
+            forward_headers = _filtered_headers(headers)
+            forward_headers.update(_provider_auth_headers(provider))
+            if REQUEST_ID_HEADER not in forward_headers:
+                forward_headers[REQUEST_ID_HEADER] = ctx.request_id
+            if isinstance(request_json, dict):
+                has_content_type = any(
+                    header_key.lower() == "content-type" for header_key in forward_headers
+                )
+                if not has_content_type:
+                    forward_headers["Content-Type"] = "application/json"
 
             try:
-                response = await litellm_completion(
-                    provider=provider,
-                    request_json=request_json,
-                    stream=stream,
-                )
-            except Exception as exc:
+                timeout = httpx.Timeout(30.0, read=None) if stream else httpx.Timeout(30.0)
+                if stream:
+                    client = httpx.AsyncClient(timeout=timeout)
+                    stream_cm = client.stream(
+                        method,
+                        url,
+                        headers=forward_headers,
+                        content=request_body_bytes,
+                    )
+                    response = await stream_cm.__aenter__()
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        await stream_cm.__aexit__(None, None, None)
+                        await client.aclose()
+                        body_text = body.decode("utf-8", errors="replace")
+                        response_headers = _response_headers(response.headers)
+                        decision = _classify_status_error(
+                            response.status_code,
+                            body_text,
+                            response_headers=response_headers,
+                            media_type=response.headers.get("content-type"),
+                        )
+                        if not decision.retryable:
+                            return _finalize_error(
+                                ctx,
+                                status_code=decision.status_code,
+                                error_body=decision.error_body,
+                                provider_id=provider["id"],
+                                model_alias=model_alias,
+                                model_id=model_id,
+                                translated=translated,
+                                protocol=protocol,
+                                response_headers=decision.response_headers,
+                                media_type=decision.media_type,
+                                allow_passthrough=decision.allow_passthrough,
+                            )
+
+                        if decision.freeze:
+                            freeze_manager.freeze(provider["id"])
+                        last_error = decision.error_body
+                        last_error_status = decision.status_code
+                        last_provider_id = provider["id"]
+                        last_model_alias = model_alias
+                        last_model_id = model_id
+                        last_translated = translated
+                        last_error_headers = decision.response_headers
+                        last_error_media_type = decision.media_type
+                        last_error_allow_passthrough = decision.allow_passthrough
+                        continue
+
+                    result = await _stream_response(
+                        response=response,
+                        stream_cm=stream_cm,
+                        client=client,
+                        provider_id=provider["id"],
+                        log_id=log_entry["id"],
+                        model_alias=model_alias,
+                        model_id=model_id,
+                        translated=translated,
+                        start_time=start_time,
+                        protocol=protocol,
+                        extra_headers=_with_request_id(None, ctx.request_id),
+                    )
+                    if ctx.return_response:
+                        return {
+                            "response": result,
+                            "status": "success",
+                            "latency_ms": None,
+                            "first_token_ms": None,
+                        }
+
+                    return {
+                        "status": "success",
+                        "latency_ms": None,
+                        "first_token_ms": None,
+                    }
+
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.request(
+                        method,
+                        url,
+                        headers=forward_headers,
+                        content=request_body_bytes,
+                    )
+            except httpx.RequestError as exc:
                 decision = _classify_exception(exc)
                 if decision.freeze:
                     freeze_manager.freeze(provider["id"])
@@ -579,43 +773,56 @@ async def _process_gateway_request(
                 last_error_allow_passthrough = decision.allow_passthrough
                 continue
 
-            if stream:
-                streaming = await litellm_streaming_response(
-                    response=response,
-                    provider_id=provider["id"],
-                    log_id=log_entry["id"],
-                    model_alias=model_alias,
-                    model_id=model_id,
-                    translated=translated,
-                    start_time=start_time,
-                    protocol=protocol,
-                    extra_headers=_with_request_id(None, ctx.request_id),
+            if response.status_code >= 400:
+                response_headers = _response_headers(response.headers)
+                decision = _classify_status_error(
+                    response.status_code,
+                    response.text,
+                    response_headers=response_headers,
+                    media_type=response.headers.get("content-type"),
                 )
-                if ctx.return_response:
-                    return {
-                        "response": streaming,
-                        "status": "success",
-                        "latency_ms": None,
-                        "first_token_ms": None,
-                    }
+                if not decision.retryable:
+                    return _finalize_error(
+                        ctx,
+                        status_code=decision.status_code,
+                        error_body=decision.error_body,
+                        provider_id=provider["id"],
+                        model_alias=model_alias,
+                        model_id=model_id,
+                        translated=translated,
+                        protocol=protocol,
+                        response_headers=decision.response_headers,
+                        media_type=decision.media_type,
+                        allow_passthrough=decision.allow_passthrough,
+                    )
 
-                return {
-                    "status": "success",
-                    "latency_ms": None,
-                    "first_token_ms": None,
-                }
+                if decision.freeze:
+                    freeze_manager.freeze(provider["id"])
+                last_error = decision.error_body
+                last_error_status = decision.status_code
+                last_provider_id = provider["id"]
+                last_model_alias = model_alias
+                last_model_id = model_id
+                last_translated = translated
+                last_error_headers = decision.response_headers
+                last_error_media_type = decision.media_type
+                last_error_allow_passthrough = decision.allow_passthrough
+                continue
 
             latency_ms = ctx.latency_ms()
-            response_payload = litellm_service._response_to_dict(response)
-            response_body = json.dumps(response_payload, ensure_ascii=True)
-            usage_stats = litellm_service._extract_usage(
-                response_payload if isinstance(response_payload, dict) else {}
-            )
+            usage_stats = {}
+            try:
+                response_json = response.json()
+            except ValueError:
+                response_json = None
+            if isinstance(response_json, dict):
+                usage_stats = _extract_usage(response_json)
+
             log_service.update_log(
                 log_entry["id"],
                 {
                     "status": "success",
-                    "response_body": response_body,
+                    "response_body": response.text,
                     "latency_ms": latency_ms,
                     "provider_id": provider["id"],
                     "model_alias": model_alias,
@@ -624,13 +831,17 @@ async def _process_gateway_request(
                     **usage_stats,
                 },
             )
+
             if ctx.return_response:
                 return {
                     "response": Response(
-                        content=response_body.encode("utf-8"),
-                        status_code=200,
-                        headers=_with_request_id(None, ctx.request_id),
-                        media_type="application/json",
+                        content=response.content,
+                        status_code=response.status_code,
+                        headers=_with_request_id(
+                            _response_headers(response.headers),
+                            ctx.request_id,
+                        ),
+                        media_type=response.headers.get("content-type"),
                     ),
                     "status": "success",
                     "latency_ms": latency_ms,
@@ -643,239 +854,46 @@ async def _process_gateway_request(
                 "first_token_ms": None,
             }
 
-        url = join_base_url(provider["base_url"], request_path)
-        url = _append_query(url, query_string)
-        forward_headers = _filtered_headers(headers)
-        forward_headers.update(_provider_auth_headers(provider))
-        if REQUEST_ID_HEADER not in forward_headers:
-            forward_headers[REQUEST_ID_HEADER] = ctx.request_id
-        if isinstance(request_json, dict):
-            has_content_type = any(
-                header_key.lower() == "content-type" for header_key in forward_headers
+        if requested_model and not model_match_seen:
+            return _finalize_error(
+                ctx,
+                status_code=400,
+                error_body=f"model not found: {requested_model}",
+                provider_id=None,
+                model_alias=None,
+                model_id=requested_model,
+                translated=False,
+                protocol=protocol,
+                error_code="model_not_found",
             )
-            if not has_content_type:
-                forward_headers["Content-Type"] = "application/json"
 
-        try:
-            timeout = httpx.Timeout(30.0, read=None) if stream else httpx.Timeout(30.0)
-            if stream:
-                client = httpx.AsyncClient(timeout=timeout)
-                stream_cm = client.stream(
-                    method,
-                    url,
-                    headers=forward_headers,
-                    content=request_body_bytes,
-                )
-                response = await stream_cm.__aenter__()
-                if response.status_code >= 400:
-                    body = await response.aread()
-                    await stream_cm.__aexit__(None, None, None)
-                    await client.aclose()
-                    body_text = body.decode("utf-8", errors="replace")
-                    response_headers = _response_headers(response.headers)
-                    decision = _classify_status_error(
-                        response.status_code,
-                        body_text,
-                        response_headers=response_headers,
-                        media_type=response.headers.get("content-type"),
-                    )
-                    if not decision.retryable:
-                        return _finalize_error(
-                            ctx,
-                            status_code=decision.status_code,
-                            error_body=decision.error_body,
-                            provider_id=provider["id"],
-                            model_alias=model_alias,
-                            model_id=model_id,
-                            translated=translated,
-                            protocol=protocol,
-                            response_headers=decision.response_headers,
-                            media_type=decision.media_type,
-                            allow_passthrough=decision.allow_passthrough,
-                        )
-
-                    if decision.freeze:
-                        freeze_manager.freeze(provider["id"])
-                    last_error = decision.error_body
-                    last_error_status = decision.status_code
-                    last_provider_id = provider["id"]
-                    last_model_alias = model_alias
-                    last_model_id = model_id
-                    last_translated = translated
-                    last_error_headers = decision.response_headers
-                    last_error_media_type = decision.media_type
-                    last_error_allow_passthrough = decision.allow_passthrough
-                    continue
-
-                result = await _stream_response(
-                    response=response,
-                    stream_cm=stream_cm,
-                    client=client,
-                    provider_id=provider["id"],
-                    log_id=log_entry["id"],
-                    model_alias=model_alias,
-                    model_id=model_id,
-                    translated=translated,
-                    start_time=start_time,
-                    protocol=protocol,
-                    extra_headers=_with_request_id(None, ctx.request_id),
-                )
-                if ctx.return_response:
-                    return {
-                        "response": result,
-                        "status": "success",
-                        "latency_ms": None,
-                        "first_token_ms": None,
-                    }
-
-                return {
-                    "status": "success",
-                    "latency_ms": None,
-                    "first_token_ms": None,
-                }
-
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.request(
-                    method,
-                    url,
-                    headers=forward_headers,
-                    content=request_body_bytes,
-                )
-        except httpx.RequestError as exc:
-            decision = _classify_exception(exc)
-            if decision.freeze:
-                freeze_manager.freeze(provider["id"])
-            if not decision.retryable:
-                return _finalize_error(
-                    ctx,
-                    status_code=decision.status_code,
-                    error_body=decision.error_body,
-                    provider_id=provider["id"],
-                    model_alias=model_alias,
-                    model_id=model_id,
-                    translated=translated,
-                    protocol=protocol,
-                    response_headers=decision.response_headers,
-                    media_type=decision.media_type,
-                    allow_passthrough=decision.allow_passthrough,
-                )
-            last_error = decision.error_body
-            last_error_status = decision.status_code
-            last_provider_id = provider["id"]
-            last_model_alias = model_alias
-            last_model_id = model_id
-            last_translated = translated
-            last_error_headers = decision.response_headers
-            last_error_media_type = decision.media_type
-            last_error_allow_passthrough = decision.allow_passthrough
-            continue
-
-        if response.status_code >= 400:
-            response_headers = _response_headers(response.headers)
-            decision = _classify_status_error(
-                response.status_code,
-                response.text,
-                response_headers=response_headers,
-                media_type=response.headers.get("content-type"),
-            )
-            if not decision.retryable:
-                return _finalize_error(
-                    ctx,
-                    status_code=decision.status_code,
-                    error_body=decision.error_body,
-                    provider_id=provider["id"],
-                    model_alias=model_alias,
-                    model_id=model_id,
-                    translated=translated,
-                    protocol=protocol,
-                    response_headers=decision.response_headers,
-                    media_type=decision.media_type,
-                    allow_passthrough=decision.allow_passthrough,
-                )
-
-            if decision.freeze:
-                freeze_manager.freeze(provider["id"])
-            last_error = decision.error_body
-            last_error_status = decision.status_code
-            last_provider_id = provider["id"]
-            last_model_alias = model_alias
-            last_model_id = model_id
-            last_translated = translated
-            last_error_headers = decision.response_headers
-            last_error_media_type = decision.media_type
-            last_error_allow_passthrough = decision.allow_passthrough
-            continue
-
-        latency_ms = ctx.latency_ms()
-        usage_stats = {}
-        try:
-            response_json = response.json()
-        except ValueError:
-            response_json = None
-        if isinstance(response_json, dict):
-            usage_stats = _extract_usage(response_json)
-
-        log_service.update_log(
-            log_entry["id"],
-            {
-                "status": "success",
-                "response_body": response.text,
-                "latency_ms": latency_ms,
-                "provider_id": provider["id"],
-                "model_alias": model_alias,
-                "model_id": model_id,
-                "translated": translated,
-                **usage_stats,
-            },
-        )
-
-        if ctx.return_response:
-            return {
-                "response": Response(
-                    content=response.content,
-                    status_code=response.status_code,
-                    headers=_with_request_id(_response_headers(response.headers), ctx.request_id),
-                    media_type=response.headers.get("content-type"),
-                ),
-                "status": "success",
-                "latency_ms": latency_ms,
-                "first_token_ms": None,
-            }
-
-        return {
-            "status": "success",
-            "latency_ms": latency_ms,
-            "first_token_ms": None,
-        }
-
-    if requested_model and not model_match_seen:
+        final_error = last_error or "no providers available"
         return _finalize_error(
             ctx,
-            status_code=400,
-            error_body=f"model not found: {requested_model}",
+            status_code=last_error_status or 503,
+            error_body=final_error,
+            provider_id=last_provider_id,
+            model_alias=last_model_alias,
+            model_id=last_model_id,
+            translated=last_translated,
+            protocol=protocol,
+            response_headers=last_error_headers,
+            media_type=last_error_media_type,
+            allow_passthrough=last_error_allow_passthrough,
+            error_code=None if last_error else "no_providers",
+        )
+    except Exception as exc:
+        return _finalize_error(
+            ctx,
+            status_code=500,
+            error_body=str(exc),
             provider_id=None,
             model_alias=None,
             model_id=requested_model,
             translated=False,
             protocol=protocol,
-            error_code="model_not_found",
+            error_code="internal_error",
         )
-
-    final_error = last_error or "no providers available"
-    return _finalize_error(
-        ctx,
-        status_code=last_error_status or 503,
-        error_body=final_error,
-        provider_id=last_provider_id,
-        model_alias=last_model_alias,
-        model_id=last_model_id,
-        translated=last_translated,
-        protocol=protocol,
-        response_headers=last_error_headers,
-        media_type=last_error_media_type,
-        allow_passthrough=last_error_allow_passthrough,
-        error_code=None if last_error else "no_providers",
-    )
 
 
 def _extract_usage(payload: Dict[str, Any]) -> Dict[str, Optional[int]]:

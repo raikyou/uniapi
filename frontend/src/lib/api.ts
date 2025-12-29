@@ -83,8 +83,18 @@ export const api = {
     apiFetch(`/admin/providers/${providerId}/models/${modelId}/test`, {
       method: "POST",
     }),
-  listLogs: (limit = 50, offset = 0) =>
-    apiFetch(`/admin/logs?limit=${limit}&offset=${offset}`),
+  listLogs: (
+    limit = 50,
+    offset = 0,
+    includeBodies = true,
+    status?: string
+  ) => {
+    const statusParam = status ? `&status=${encodeURIComponent(status)}` : ""
+    return apiFetch(
+      `/admin/logs?limit=${limit}&offset=${offset}&include_bodies=${includeBodies}${statusParam}`
+    )
+  },
+  getLog: (logId: number) => apiFetch(`/admin/logs/${logId}`),
   metricsSummary: () => apiFetch("/admin/metrics/summary"),
   metricsTopModels: (limit = 10) => apiFetch(`/admin/metrics/top-models?limit=${limit}`),
   metricsTopProviders: (limit = 10) => apiFetch(`/admin/metrics/top-providers?limit=${limit}`),

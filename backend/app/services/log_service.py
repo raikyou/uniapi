@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from ..db import DatabaseSession, DatabaseReadOnlySession
@@ -9,7 +9,7 @@ from ..settings import LOG_RETENTION_DAYS
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _retention_days() -> int:
@@ -46,6 +46,29 @@ _LOG_SELECT_SQL = """
     LEFT JOIN request_log_bodies b ON b.log_id = r.id
 """
 
+_LOG_SELECT_SUMMARY_SQL = """
+    SELECT
+        r.id,
+        r.request_id,
+        r.model_alias,
+        r.model_id,
+        r.provider_id,
+        r.endpoint,
+        NULL AS request_body,
+        NULL AS response_body,
+        r.is_streaming,
+        r.status,
+        r.latency_ms,
+        r.first_token_ms,
+        r.tokens_in,
+        r.tokens_out,
+        r.tokens_total,
+        r.tokens_cache,
+        r.translated,
+        r.created_at
+    FROM request_logs r
+"""
+
 
 def _upsert_log_bodies(
     conn: Any,
@@ -68,7 +91,7 @@ def _upsert_log_bodies(
 
 
 def purge_old_logs() -> None:
-    cutoff = datetime.utcnow() - timedelta(days=_retention_days())
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_retention_days())
     cutoff_iso = cutoff.isoformat()
     with DatabaseSession() as conn:
         conn.execute(
@@ -176,11 +199,22 @@ def get_log(log_id: int) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-def list_logs(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+def list_logs(
+    limit: int = 50,
+    offset: int = 0,
+    include_bodies: bool = True,
+    status: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    select_sql = _LOG_SELECT_SQL if include_bodies else _LOG_SELECT_SUMMARY_SQL
+    params: list[Any] = []
+    query = select_sql
+    if status:
+        query += " WHERE r.status = ?"
+        params.append(status)
     with DatabaseReadOnlySession() as conn:
         rows = conn.execute(
-            _LOG_SELECT_SQL + " ORDER BY r.id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            query + " ORDER BY r.id DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         ).fetchall()
         return [dict(row) for row in rows]
 

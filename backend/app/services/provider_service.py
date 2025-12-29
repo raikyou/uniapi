@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from ..db import DatabaseSession, DatabaseReadOnlySession
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def list_providers(limit: Optional[int] = None, offset: int = 0) -> List[Dict[str, Any]]:

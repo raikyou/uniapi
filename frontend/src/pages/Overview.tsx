@@ -41,6 +41,18 @@ const formatChartLabel = (label: string) => {
   return label
 }
 
+const formatAxisValue = (value: number) => {
+  if (value >= 1_000_000) {
+    const precision = value >= 10_000_000 ? 0 : 1
+    return `${(value / 1_000_000).toFixed(precision)}M`
+  }
+  if (value >= 1_000) {
+    const precision = value >= 10_000 ? 0 : 1
+    return `${(value / 1_000).toFixed(precision)}K`
+  }
+  return value.toLocaleString()
+}
+
 export default function Overview() {
   const [metrics, setMetrics] = useState<{
     request_count: number
@@ -113,7 +125,7 @@ export default function Overview() {
           normalizedProviders.length === 0 ||
           normalizedDates.length === 0)
       ) {
-        const logs = (await api.listLogs(500, 0)) as LogEntry[]
+        const logs = (await api.listLogs(500, 0, false)) as LogEntry[]
         const providerList =
           normalizedProviders.length === 0
             ? ((await api.listProviders(500, 0)) as Provider[])
@@ -153,7 +165,7 @@ export default function Overview() {
           providerEntry.token_count += tokens
           providerMap.set(providerLabel, providerEntry)
 
-          const dateLabel = log.created_at ? log.created_at.slice(0, 10) : "unknown"
+          const dateLabel = log.created_at ? new Date(log.created_at).toLocaleDateString("en-CA") : "unknown"
           const dateEntry = dateMap.get(dateLabel) || {
             label: dateLabel,
             request_count: 0,
@@ -240,8 +252,11 @@ export default function Overview() {
     const maxRequests = Math.max(...items.map((item) => item.request_count), 1)
     const maxTokens = Math.max(...items.map((item) => item.token_count), 1)
     const tickCount = 4
-    const ticks = Array.from({ length: tickCount }, (_, index) =>
+    const requestTicks = Array.from({ length: tickCount }, (_, index) =>
       Math.round((maxRequests * (tickCount - 1 - index)) / (tickCount - 1))
+    )
+    const tokenTicks = Array.from({ length: tickCount }, (_, index) =>
+      Math.round((maxTokens * (tickCount - 1 - index)) / (tickCount - 1))
     )
     const axisLabelHeight = 36
     const axisLabelGap = 8
@@ -260,22 +275,24 @@ export default function Overview() {
       return Math.max(percent, 4)
     }
     return (
-      <section className="rounded-3xl border bg-white/85 p-5 shadow-sm">
+      <section className="min-h-[360px] rounded-3xl border bg-white/85 p-5 shadow-sm">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-foreground">{title}</h2>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
         </div>
         {items.length === 0 ? (
-          <div className="mt-4 text-sm text-muted-foreground">No metrics yet.</div>
+          <div className="mt-4 flex min-h-[260px] items-center justify-center text-sm text-muted-foreground">
+            No metrics yet.
+          </div>
         ) : (
           <div className="mt-4">
-            <div className="grid grid-cols-[52px_1fr] gap-4">
+            <div className="grid grid-cols-[52px_1fr_52px] gap-4">
               <div
                 className="flex flex-col justify-between pt-4 text-[11px] text-muted-foreground"
                 style={{ paddingBottom: `${plotBottom}px` }}
               >
-                {ticks.map((tick, index) => (
-                  <span key={`${title}-tick-${index}`}>{tick.toLocaleString()}</span>
+                {requestTicks.map((tick, index) => (
+                  <span key={`${title}-tick-${index}`}>{formatAxisValue(tick)}</span>
                 ))}
               </div>
               <div className="space-y-3">
@@ -285,7 +302,7 @@ export default function Overview() {
                       className="pointer-events-none absolute inset-x-0 grid grid-rows-4"
                       style={{ top: `${plotTop}px`, bottom: `${plotBottom}px` }}
                     >
-                      {ticks.map((_, index) => (
+                      {requestTicks.map((_, index) => (
                         <div
                           key={`${title}-grid-${index}`}
                           className="border-t border-dashed border-muted-foreground/25"
@@ -367,6 +384,14 @@ export default function Overview() {
                     Tokens
                   </div>
                 </div>
+              </div>
+              <div
+                className="flex flex-col justify-between pt-4 text-right text-[11px] text-muted-foreground"
+                style={{ paddingBottom: `${plotBottom}px` }}
+              >
+                {tokenTicks.map((tick, index) => (
+                  <span key={`${title}-token-tick-${index}`}>{formatAxisValue(tick)}</span>
+                ))}
               </div>
             </div>
           </div>

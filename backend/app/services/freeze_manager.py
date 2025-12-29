@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 from ..settings import FREEZE_DURATION_SECONDS
@@ -19,7 +19,7 @@ class FreezeManager:
                 duration = int(value)
             except ValueError:
                 duration = FREEZE_DURATION_SECONDS
-        self._frozen_until[provider_id] = datetime.utcnow() + timedelta(
+        self._frozen_until[provider_id] = datetime.now(timezone.utc) + timedelta(
             seconds=duration
         )
 
@@ -30,7 +30,7 @@ class FreezeManager:
         until = self._frozen_until.get(provider_id)
         if not until:
             return False
-        if datetime.utcnow() >= until:
+        if datetime.now(timezone.utc) >= until:
             self._frozen_until.pop(provider_id, None)
             return False
         return True
@@ -39,5 +39,5 @@ class FreezeManager:
         until = self._frozen_until.get(provider_id)
         if not until:
             return 0
-        remaining = int((until - datetime.utcnow()).total_seconds())
+        remaining = int((until - datetime.now(timezone.utc)).total_seconds())
         return max(0, remaining)
