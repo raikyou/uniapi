@@ -43,12 +43,14 @@ export default function Logs() {
   const [error, setError] = useState<string | null>(null)
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null)
   const [logDetail, setLogDetail] = useState<LogEntry | null>(null)
-  const [logDetailLoading, setLogDetailLoading] = useState(false)
   const [responseView, setResponseView] = useState<"pretty" | "raw">("pretty")
   const [statusFilter, setStatusFilter] = useState("all")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [hasNextPage, setHasNextPage] = useState(false)
+  const [displayedRequestBody, setDisplayedRequestBody] = useState("—")
+  const [displayedResponseBody, setDisplayedResponseBody] = useState("—")
+  const [bodyPending, setBodyPending] = useState(false)
   const pageSizeOptions = [10, 20, 50, 100]
   const statusFilterActive = statusFilter !== "all"
 
@@ -136,6 +138,12 @@ export default function Logs() {
     () => (expandedLogId ? logs.find((log) => log.id === expandedLogId) : null),
     [expandedLogId, logs]
   )
+  const expandedLogIndex = useMemo(
+    () => (expandedLogId ? logs.findIndex((log) => log.id === expandedLogId) : -1),
+    [expandedLogId, logs]
+  )
+  const hasPrevLog = expandedLogIndex >= 0 && expandedLogIndex < logs.length - 1
+  const hasNextLog = expandedLogIndex > 0
 
   useEffect(() => {
     if (expandedLogId) {
@@ -146,22 +154,71 @@ export default function Logs() {
   useEffect(() => {
     if (!expandedLogId) {
       setLogDetail(null)
-      setLogDetailLoading(false)
+      setDisplayedRequestBody("—")
+      setDisplayedResponseBody("—")
+      setBodyPending(false)
       return
     }
-    setLogDetailLoading(true)
+    setLogDetail(null)
+    setBodyPending(true)
     api
       .getLog(expandedLogId)
       .then((data) => setLogDetail(data as LogEntry))
       .catch((err) => setError((err as Error).message))
-      .finally(() => setLogDetailLoading(false))
   }, [expandedLogId])
 
-  const activeLog = logDetail ?? selectedLog
-  const rawResponseBody =
-    activeLog?.response_body ?? (logDetailLoading ? "Loading..." : "—")
-  const prettyResponseBody = activeLog ? formatBody(activeLog.response_body) : "—"
-  const responseBody = responseView === "raw" ? rawResponseBody : prettyResponseBody
+  useEffect(() => {
+    if (!expandedLogId) {
+      return
+    }
+    if (logDetail && logDetail.id === expandedLogId) {
+      setDisplayedRequestBody(formatBody(logDetail.request_body))
+      const responseValue =
+        responseView === "raw"
+          ? logDetail.response_body ?? "—"
+          : formatBody(logDetail.response_body)
+      setDisplayedResponseBody(responseValue)
+      setBodyPending(false)
+      return
+    }
+    if (!selectedLog) {
+      return
+    }
+    const hasRequestBody =
+      selectedLog.request_body != null && selectedLog.request_body.trim().length > 0
+    const hasResponseBody =
+      selectedLog.response_body != null && selectedLog.response_body.trim().length > 0
+    if (hasRequestBody) {
+      setDisplayedRequestBody(formatBody(selectedLog.request_body))
+    }
+    if (hasResponseBody) {
+      const responseValue =
+        responseView === "raw"
+          ? selectedLog.response_body ?? "—"
+          : formatBody(selectedLog.response_body)
+      setDisplayedResponseBody(responseValue)
+    }
+  }, [expandedLogId, logDetail, responseView, selectedLog])
+
+  const responseBody = displayedResponseBody
+  const requestBody = displayedRequestBody
+  const contentFadeClass = loading
+    ? "opacity-60 transition-opacity duration-200"
+    : "opacity-100 transition-opacity duration-200"
+  const bodyFadeClass = bodyPending
+    ? "opacity-70 transition-opacity duration-200"
+    : "opacity-100 transition-opacity duration-200"
+
+  const navigateLog = (direction: "prev" | "next") => {
+    if (expandedLogIndex < 0) {
+      return
+    }
+    const nextIndex = direction === "prev" ? expandedLogIndex + 1 : expandedLogIndex - 1
+    const nextLog = logs[nextIndex]
+    if (nextLog) {
+      setExpandedLogId(nextLog.id)
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-6 overflow-hidden pr-1">
@@ -184,11 +241,8 @@ export default function Logs() {
 
       <Card className="flex h-full flex-1 flex-col overflow-hidden bg-card/90">
         <CardContent className="flex h-full min-h-0 flex-col pb-0">
-          {loading ? (
-            <div className="text-sm text-muted-foreground">Loading...</div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col text-sm">
-              <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="flex min-h-0 flex-1 flex-col text-sm">
+            <div className={`min-h-0 flex-1 overflow-y-auto ${contentFadeClass}`}>
                 <Table wrapperClassName="w-full overflow-visible">
                 <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                   <TableRow>
@@ -243,7 +297,7 @@ export default function Logs() {
                       </div>
                     </TableHead>
                     <TableHead>Latency</TableHead>
-                    <TableHead>First Token</TableHead>
+                    <TableHead>FTL</TableHead>
                     <TableHead>Input</TableHead>
                     <TableHead>Output</TableHead>
                     <TableHead>Total</TableHead>
@@ -274,8 +328,8 @@ export default function Logs() {
                               #{log.id}
                             </button>
                           </TableCell>
-                          <TableCell className="py-2">
-                            <div className="font-medium">
+                          <TableCell className="py-2 text-xs">
+                            <div className="font-normal">
                               {log.model_alias || log.model_id || "-"}
                             </div>
                             {log.model_alias && log.model_id && (
@@ -295,7 +349,7 @@ export default function Logs() {
                               {log.is_streaming ? "Streaming" : "Non-streaming"}
                             </Badge>
                           </TableCell>
-                          <TableCell className="py-2">{channel}</TableCell>
+                          <TableCell className="py-2 text-xs">{channel}</TableCell>
                           <TableCell className="py-2">
                             <Badge
                               variant="outline"
@@ -322,8 +376,10 @@ export default function Logs() {
                               {log.status}
                             </Badge>
                           </TableCell>
-                          <TableCell className="py-2">{log.latency_ms ? `${log.latency_ms}ms` : "-"}</TableCell>
-                          <TableCell className="py-2">
+                          <TableCell className="py-2 text-xs">
+                            {log.latency_ms ? `${log.latency_ms}ms` : "-"}
+                          </TableCell>
+                          <TableCell className="py-2 text-xs">
                             {log.first_token_ms ? `${log.first_token_ms}ms` : "-"}
                           </TableCell>
                           <TableCell className="py-2 text-xs">{tokensIn}</TableCell>
@@ -381,7 +437,6 @@ export default function Logs() {
                 </div>
               </div>
             </div>
-          )}
         </CardContent>
       </Card>
 
@@ -397,9 +452,31 @@ export default function Logs() {
                 <div className="text-sm text-muted-foreground">Log</div>
                 <div className="text-lg font-semibold">#{expandedLogId}</div>
               </div>
-              <Button variant="ghost" onClick={() => setExpandedLogId(null)}>
-                Close
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="Previous log"
+                  onClick={() => navigateLog("prev")}
+                  disabled={!hasPrevLog}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="Next log"
+                  onClick={() => navigateLog("next")}
+                  disabled={!hasNextLog}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" onClick={() => setExpandedLogId(null)}>
+                  Close
+                </Button>
+              </div>
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
               <div>
@@ -414,22 +491,14 @@ export default function Logs() {
                     aria-label="Copy request"
                     onClick={() =>
                       handleCopy(
-                        activeLog
-                          ? formatBody(activeLog.request_body)
-                          : logDetailLoading
-                          ? "Loading..."
-                          : "—"
+                        requestBody
                       )
                     }
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
-                  <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-3 text-xs">
-                    {activeLog
-                      ? formatBody(activeLog.request_body)
-                      : logDetailLoading
-                      ? "Loading..."
-                      : "—"}
+                  <pre className={`h-[40vh] overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-3 text-xs ${bodyFadeClass}`}>
+                    {requestBody}
                   </pre>
                 </div>
               </div>
@@ -467,7 +536,7 @@ export default function Logs() {
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
-                  <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-3 text-xs">
+                  <pre className={`h-[40vh] overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-3 text-xs ${bodyFadeClass}`}>
                     {responseBody}
                   </pre>
                 </div>

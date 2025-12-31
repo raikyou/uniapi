@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { NavLink, Outlet } from "react-router-dom"
+import { NavLink, Outlet, useLocation } from "react-router-dom"
 import {
   Activity,
   Cog,
@@ -23,6 +23,7 @@ const navItems = [
 export default function AppLayout() {
   const [logRetentionDays, setLogRetentionDays] = useState("7")
   const [freezeDurationSeconds, setFreezeDurationSeconds] = useState("300")
+  const location = useLocation()
 
   useEffect(() => {
     const loadConfigs = async () => {
@@ -108,7 +109,9 @@ export default function AppLayout() {
 
         <main className="flex h-[calc(100vh-4rem)] flex-col overflow-hidden">
           <AuthGate>
-            <Outlet />
+            <div key={location.pathname} className="page-transition h-full">
+              <Outlet />
+            </div>
           </AuthGate>
         </main>
       </div>

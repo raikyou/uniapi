@@ -131,6 +131,9 @@ export default function Providers() {
 
   const providerFilterActive = providerTypeFilter !== "all"
   const translateFilterActive = translateFilter !== "all"
+  const contentFadeClass = loading
+    ? "opacity-60 transition-opacity duration-200"
+    : "opacity-100 transition-opacity duration-200"
 
   const filteredProviders = useMemo(() => {
     let next = providers
@@ -845,11 +848,8 @@ export default function Providers() {
       <section className="flex min-h-0 flex-1">
         <Card className="flex h-full flex-1 flex-col overflow-hidden bg-card/90">
           <CardContent className="flex h-full min-h-0 flex-col pb-0">
-            {loading ? (
-              <div className="text-sm text-muted-foreground">Loading...</div>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col text-sm">
-                <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="flex min-h-0 flex-1 flex-col text-sm">
+                <div className={`min-h-0 flex-1 overflow-y-auto ${contentFadeClass}`}>
                   <Table wrapperClassName="w-full overflow-visible">
                   <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                     <TableRow>
@@ -1089,7 +1089,7 @@ export default function Providers() {
                           />
                         </TableCell>
                       <TableCell>
-                        <div className="flex flex-col whitespace-nowrap text-[12px] leading-[14px] font-semibold text-foreground">
+                        <div className="flex flex-col whitespace-nowrap text-[12px] leading-[14px] text-foreground/80">
                           <span>
                             {provider.last_ftl_ms != null ? `${provider.last_ftl_ms}ms` : "-"}
                           </span>
@@ -1592,7 +1592,6 @@ export default function Providers() {
                   </div>
                 </div>
               </div>
-            )}
           </CardContent>
         </Card>
 
