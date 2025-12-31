@@ -119,6 +119,28 @@ def list_provider_models(provider_id: int) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
+def list_provider_models_by_provider_ids(
+    provider_ids: List[int],
+) -> Dict[int, List[Dict[str, Any]]]:
+    if not provider_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in provider_ids)
+    query = f"""
+        SELECT * FROM provider_models
+        WHERE provider_id IN ({placeholders})
+        ORDER BY id DESC
+    """
+    with DatabaseReadOnlySession() as conn:
+        rows = conn.execute(query, tuple(provider_ids)).fetchall()
+
+    grouped: Dict[int, List[Dict[str, Any]]] = {}
+    for row in rows:
+        row_dict = dict(row)
+        grouped.setdefault(row_dict["provider_id"], []).append(row_dict)
+    return grouped
+
+
 def create_provider_model(provider_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     now = _utc_now()
     with DatabaseSession() as conn:

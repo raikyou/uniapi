@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ..schemas import (
     ProviderCreate,
     ProviderOut,
+    ProviderWithModels,
     ProviderUpdate,
     ProviderModelCreate,
     ProviderModelOut,
@@ -36,27 +37,40 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
+def _normalize_provider(provider: dict) -> dict:
+    provider["enabled"] = bool(provider["enabled"])
+    provider["translate_enabled"] = bool(provider["translate_enabled"])
+    provider["frozen"] = freeze_manager.is_frozen(provider["id"])
+    provider["freeze_remaining_seconds"] = freeze_manager.remaining_seconds(provider["id"])
+    return provider
+
+
 @router.get("/providers", response_model=List[ProviderOut])
 async def list_providers(limit: int = 50, offset: int = 0, _: None = Depends(require_admin)):
     providers = provider_service.list_providers(limit=limit, offset=offset)
+    return [_normalize_provider(provider) for provider in providers]
+
+
+@router.get("/providers/with-models", response_model=List[ProviderWithModels])
+async def list_providers_with_models(
+    limit: int = 50, offset: int = 0, _: None = Depends(require_admin)
+):
+    providers = provider_service.list_providers(limit=limit, offset=offset)
+    provider_ids = [provider["id"] for provider in providers]
+    models_by_provider = provider_service.list_provider_models_by_provider_ids(provider_ids)
+
     result = []
     for provider in providers:
-        provider["enabled"] = bool(provider["enabled"])
-        provider["translate_enabled"] = bool(provider["translate_enabled"])
-        provider["frozen"] = freeze_manager.is_frozen(provider["id"])
-        provider["freeze_remaining_seconds"] = freeze_manager.remaining_seconds(provider["id"])
-        result.append(provider)
+        normalized = _normalize_provider(provider)
+        normalized["models"] = models_by_provider.get(provider["id"], [])
+        result.append(normalized)
     return result
 
 
 @router.post("/providers", response_model=ProviderOut)
 async def create_provider(payload: ProviderCreate, _: None = Depends(require_admin)):
     provider = provider_service.create_provider(payload.model_dump())
-    provider["enabled"] = bool(provider["enabled"])
-    provider["translate_enabled"] = bool(provider["translate_enabled"])
-    provider["frozen"] = False
-    provider["freeze_remaining_seconds"] = 0
-    return provider
+    return _normalize_provider(provider)
 
 
 @router.patch("/providers/{provider_id}", response_model=ProviderOut)
@@ -67,11 +81,7 @@ async def update_provider(provider_id: int, payload: ProviderUpdate, _: None = D
         raise HTTPException(status_code=404, detail="provider not found")
     if update_payload.get("enabled") is True:
         freeze_manager.unfreeze(provider_id)
-    provider["enabled"] = bool(provider["enabled"])
-    provider["translate_enabled"] = bool(provider["translate_enabled"])
-    provider["frozen"] = freeze_manager.is_frozen(provider_id)
-    provider["freeze_remaining_seconds"] = freeze_manager.remaining_seconds(provider_id)
-    return provider
+    return _normalize_provider(provider)
 
 
 @router.delete("/providers/{provider_id}")

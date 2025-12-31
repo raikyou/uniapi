@@ -20,7 +20,7 @@ import {
 import { Anthropic, Gemini, OpenAI } from "@lobehub/icons"
 
 import { api } from "@/lib/api"
-import type { Provider, ProviderModel } from "@/types"
+import type { Provider, ProviderModel, ProviderWithModels } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -225,27 +225,35 @@ export default function Providers() {
     }
   }
 
+  const applyProviders = (
+    data: Provider[],
+    models: Record<number, ProviderModel[]>,
+    size: number
+  ) => {
+    setHasNextPage(data.length === size)
+    setProviders(data)
+    setModelsByProvider(models)
+    setPriorityDraft((prev) => {
+      const next = { ...prev }
+      for (const provider of data) {
+        next[provider.id] = provider.priority
+      }
+      return next
+    })
+  }
+
   const loadProviders = async (pageIndex: number, size: number) => {
     setLoading(true)
     setError(null)
     try {
       const offset = (pageIndex - 1) * size
-      const data = (await api.listProviders(size, offset)) as Provider[]
-      setHasNextPage(data.length === size)
-      setProviders(data)
-      setPriorityDraft((prev) => {
-        const next = { ...prev }
-        for (const provider of data) {
-          next[provider.id] = provider.priority
-        }
-        return next
-      })
-      await Promise.all(
-        data.map(async (provider) => {
-          const models = (await api.listModels(provider.id)) as ProviderModel[]
-          setModelsByProvider((prev) => ({ ...prev, [provider.id]: models }))
-        })
-      )
+      const data = (await api.listProvidersWithModels(size, offset)) as ProviderWithModels[]
+      const providersList = data.map(({ models, ...provider }) => provider)
+      const modelsMap = data.reduce<Record<number, ProviderModel[]>>((acc, provider) => {
+        acc[provider.id] = provider.models || []
+        return acc
+      }, {})
+      applyProviders(providersList, modelsMap, size)
     } catch (err) {
       setError((err as Error).message)
     } finally {

@@ -22,6 +22,10 @@ export type ProviderModel = {
   created_at: string
 }
 
+export type ProviderWithModels = Provider & {
+  models: ProviderModel[]
+}
+
 export type LogEntry = {
   id: number
   request_id: string

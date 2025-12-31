@@ -1,5 +1,6 @@
 const RAW_API_BASE = import.meta.env.VITE_API_BASE || ""
 export const API_BASE = RAW_API_BASE.replace(/\/+$/, "")
+const ADMIN_API_BASE = API_BASE.replace(/\/v1beta$/, "").replace(/\/v1$/, "")
 const ENV_API_KEY = import.meta.env.VITE_API_KEY || ""
 const API_KEY_STORAGE = "uniapi_api_key"
 
@@ -21,7 +22,7 @@ async function apiFetch(path: string, options: RequestInit = {}) {
     headers.set("Content-Type", "application/json")
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${ADMIN_API_BASE}${path}`, {
     ...options,
     headers,
   })
@@ -47,6 +48,8 @@ async function apiFetch(path: string, options: RequestInit = {}) {
 export const api = {
   listProviders: (limit = 50, offset = 0) =>
     apiFetch(`/admin/providers?limit=${limit}&offset=${offset}`),
+  listProvidersWithModels: (limit = 50, offset = 0) =>
+    apiFetch(`/admin/providers/with-models?limit=${limit}&offset=${offset}`),
   createProvider: (payload: unknown) =>
     apiFetch("/admin/providers", { method: "POST", body: JSON.stringify(payload) }),
   updateProvider: (id: number, payload: unknown) =>

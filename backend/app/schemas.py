@@ -55,6 +55,10 @@ class ProviderModelOut(BaseModel):
     created_at: str
 
 
+class ProviderWithModels(ProviderOut):
+    models: List[ProviderModelOut]
+
+
 class ModelSyncResult(BaseModel):
     count: int
     models: List[ProviderModelOut]
