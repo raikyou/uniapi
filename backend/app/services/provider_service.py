@@ -231,8 +231,12 @@ def find_model_match(provider_id: int, model_name: str) -> Optional[Dict[str, An
 
 def _regex_match(pattern: str, value: str) -> bool:
     import re
+    import fnmatch
 
     try:
-        return re.match(pattern, value) is not None
-    except re.error:
+        # Convert shell-style wildcards to regex pattern
+        # This allows "claude*" to match "claude-4-5-sonnet"
+        regex_pattern = fnmatch.translate(pattern)
+        return re.match(regex_pattern, value) is not None
+    except (re.error, Exception):
         return False
