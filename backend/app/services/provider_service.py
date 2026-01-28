@@ -212,19 +212,19 @@ def find_model_match(provider_id: int, model_name: str) -> Optional[Dict[str, An
     for row in rows:
         row_dict = dict(row)
         alias = row_dict.get("alias")
+        model_id = row_dict.get("model_id")
+
+        # Check exact alias match - use stored model_id for upstream
         if alias and alias == model_name:
-            return row_dict
+            return {**row_dict, "effective_model_id": model_id}
 
-    for row in rows:
-        row_dict = dict(row)
-        alias = row_dict.get("alias")
-        if alias and _regex_match(alias, model_name):
-            return row_dict
+        # Check wildcard model_id match - use requested model name for upstream
+        if model_id and _regex_match(model_id, model_name):
+            return {**row_dict, "effective_model_id": model_name}
 
-    for row in rows:
-        row_dict = dict(row)
-        if row_dict.get("model_id") == model_name:
-            return row_dict
+        # Check exact model_id match - use stored model_id for upstream
+        if model_id == model_name:
+            return {**row_dict, "effective_model_id": model_id}
 
     return None
 
@@ -235,7 +235,7 @@ def _regex_match(pattern: str, value: str) -> bool:
 
     try:
         # Convert shell-style wildcards to regex pattern
-        # This allows "claude*" to match "claude-4-5-sonnet"
+        # This allows model_id "claude*" to match requested model "claude-4-5-sonnet"
         regex_pattern = fnmatch.translate(pattern)
         return re.match(regex_pattern, value) is not None
     except (re.error, Exception):

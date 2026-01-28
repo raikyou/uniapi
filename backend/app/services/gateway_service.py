@@ -538,7 +538,7 @@ async def _process_gateway_request(
                 if not match:
                     continue
                 model_alias = match.get("alias")
-                model_id = match.get("model_id")
+                model_id = match.get("effective_model_id")
                 if isinstance(request_json, dict):
                     model_name = request_json.get("model")
                     if model_name:
@@ -559,7 +559,7 @@ async def _process_gateway_request(
                 if requested_model and not match:
                     continue
                 if match:
-                    model_id = match.get("model_id") or requested_model
+                    model_id = match.get("effective_model_id") or requested_model
                 elif requested_model:
                     model_id = requested_model
 
