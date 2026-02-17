@@ -67,6 +67,7 @@ const emptyProviderForm = {
   priority: 0,
   enabled: true,
   translate_enabled: false,
+  strip_v_prefix: false,
 }
 
 const providerTypeMeta = {
@@ -535,6 +536,7 @@ export default function Providers() {
       priority: provider.priority,
       enabled: provider.enabled,
       translate_enabled: provider.translate_enabled,
+      strip_v_prefix: provider.strip_v_prefix,
     })
     setPreviewModels([])
     setPreviewSelected({})
@@ -687,6 +689,16 @@ export default function Providers() {
                         <Eye className="h-4 w-4" />
                       )}
                     </Button>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium">Strip version prefix (/v1)</label>
+                    <Switch
+                      checked={createForm.strip_v_prefix}
+                      onCheckedChange={(checked) =>
+                        setCreateForm((prev) => ({ ...prev, strip_v_prefix: checked }))
+                      }
+                    />
                   </div>
 
                   <div className="rounded-lg border bg-card p-2.5">
@@ -1137,6 +1149,7 @@ export default function Providers() {
                                 priority: provider.priority,
                                 enabled: provider.enabled,
                                 translate_enabled: provider.translate_enabled,
+                                strip_v_prefix: provider.strip_v_prefix,
                               })
                               const models = modelsByProvider[provider.id] || []
                               setEditFetchedModelIds([])
@@ -1259,6 +1272,18 @@ export default function Providers() {
                           <Eye className="h-4 w-4" />
                         )}
                       </Button>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium">Strip version prefix (/v1)</label>
+                      <Switch
+                        checked={editForm.strip_v_prefix}
+                        onCheckedChange={(checked) =>
+                          setEditForm((prev) =>
+                            prev ? { ...prev, strip_v_prefix: checked } : prev
+                          )
+                        }
+                      />
                     </div>
 
                     <div className="rounded-lg border bg-card p-2.5">

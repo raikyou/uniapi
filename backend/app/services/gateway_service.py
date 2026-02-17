@@ -19,7 +19,7 @@ from . import provider_service, log_service, litellm_service
 from .auth import is_authorized
 from .error_format import build_stream_error_frames, format_error_body, normalize_error_body
 from .litellm_service import litellm_completion, litellm_streaming_response
-from .url_service import join_base_url
+from .url_service import join_base_url, strip_version_prefix
 from .stream_aggregate import aggregate_stream_chunks, collect_stream_chunks
 
 
@@ -695,7 +695,8 @@ async def _process_gateway_request(
                     "first_token_ms": None,
                 }
 
-            url = join_base_url(provider["base_url"], request_path)
+            forward_path = strip_version_prefix(request_path) if provider.get("strip_v_prefix") else request_path
+            url = join_base_url(provider["base_url"], forward_path)
             url = _append_query(url, query_string)
             forward_headers = _filtered_headers(headers)
             forward_headers.update(_provider_auth_headers(provider))

@@ -10,6 +10,7 @@ class ProviderBase(BaseModel):
     priority: int = 0
     enabled: bool = True
     translate_enabled: bool = False
+    strip_v_prefix: bool = False
 
 
 class ProviderCreate(ProviderBase):
@@ -24,6 +25,7 @@ class ProviderUpdate(BaseModel):
     priority: Optional[int] = None
     enabled: Optional[bool] = None
     translate_enabled: Optional[bool] = None
+    strip_v_prefix: Optional[bool] = None
 
 
 class ProviderOut(ProviderBase):

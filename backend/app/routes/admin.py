@@ -40,6 +40,7 @@ def require_admin(request: Request) -> None:
 def _normalize_provider(provider: dict) -> dict:
     provider["enabled"] = bool(provider["enabled"])
     provider["translate_enabled"] = bool(provider["translate_enabled"])
+    provider["strip_v_prefix"] = bool(provider.get("strip_v_prefix", 0))
     provider["frozen"] = freeze_manager.is_frozen(provider["id"])
     provider["freeze_remaining_seconds"] = freeze_manager.remaining_seconds(provider["id"])
     return provider

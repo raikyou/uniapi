@@ -42,6 +42,7 @@ def init_db() -> None:
     ensure_column("providers", "last_tested_at", "TEXT")
     ensure_column("providers", "last_ftl_ms", "INTEGER")
     ensure_column("providers", "last_tps", "REAL")
+    ensure_column("providers", "strip_v_prefix", "INTEGER NOT NULL DEFAULT 0")
 
     cur.execute(
         """

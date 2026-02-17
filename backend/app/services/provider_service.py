@@ -38,8 +38,8 @@ def create_provider(payload: Dict[str, Any]) -> Dict[str, Any]:
     with DatabaseSession() as conn:
         cur = conn.execute(
             """
-            INSERT INTO providers (name, type, base_url, api_key, priority, enabled, translate_enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO providers (name, type, base_url, api_key, priority, enabled, translate_enabled, strip_v_prefix, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload["name"],
@@ -49,6 +49,7 @@ def create_provider(payload: Dict[str, Any]) -> Dict[str, Any]:
                 payload.get("priority", 0),
                 1 if payload.get("enabled", True) else 0,
                 1 if payload.get("translate_enabled", False) else 0,
+                1 if payload.get("strip_v_prefix", False) else 0,
                 now,
                 now,
             ),
@@ -64,10 +65,10 @@ def update_provider(provider_id: int, payload: Dict[str, Any]) -> Optional[Dict[
 
     fields = []
     values = []
-    for key in ["name", "type", "base_url", "api_key", "priority", "enabled", "translate_enabled"]:
+    for key in ["name", "type", "base_url", "api_key", "priority", "enabled", "translate_enabled", "strip_v_prefix"]:
         if key in payload and payload[key] is not None:
             fields.append(f"{key} = ?")
-            if key in ("enabled", "translate_enabled"):
+            if key in ("enabled", "translate_enabled", "strip_v_prefix"):
                 values.append(1 if payload[key] else 0)
             else:
                 values.append(payload[key])

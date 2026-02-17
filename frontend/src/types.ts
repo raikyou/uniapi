@@ -7,6 +7,7 @@ export type Provider = {
   priority: number
   enabled: boolean
   translate_enabled: boolean
+  strip_v_prefix: boolean
   frozen: boolean
   freeze_remaining_seconds: number
   last_tested_at?: string | null
