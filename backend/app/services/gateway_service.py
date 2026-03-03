@@ -559,7 +559,19 @@ async def _process_gateway_request(
                 if requested_model and not match:
                     continue
                 if match:
+                    model_alias = match.get("alias")
                     model_id = match.get("effective_model_id") or requested_model
+                    if isinstance(request_json, dict) and model_id:
+                        current_model = request_json.get("model")
+                        if current_model and current_model != model_id:
+                            request_json = dict(request_json)
+                            request_json["model"] = model_id
+                            request_body_bytes = json.dumps(request_json).encode("utf-8")
+                    if path_model and model_id:
+                        prefix, path_model_name, suffix = path_model
+                        if model_id != path_model_name:
+                            encoded_model_id = urllib.parse.quote(model_id, safe=":/")
+                            request_path = f"{prefix}{encoded_model_id}{suffix}"
                 elif requested_model:
                     model_id = requested_model
 
