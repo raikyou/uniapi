@@ -210,22 +210,26 @@ def find_model_match(provider_id: int, model_name: str) -> Optional[Dict[str, An
             (provider_id,),
         ).fetchall()
 
-    for row in rows:
-        row_dict = dict(row)
+    row_dicts = [dict(row) for row in rows]
+
+    # Priority 1: Exact alias match - use stored model_id for upstream
+    for row_dict in row_dicts:
         alias = row_dict.get("alias")
         model_id = row_dict.get("model_id")
-
-        # Check exact alias match - use stored model_id for upstream
         if alias and alias == model_name:
             return {**row_dict, "effective_model_id": model_id}
 
-        # Check wildcard model_id match - use requested model name for upstream
-        if model_id and _regex_match(model_id, model_name):
-            return {**row_dict, "effective_model_id": model_name}
-
-        # Check exact model_id match - use stored model_id for upstream
+    # Priority 2: Exact model_id match - use stored model_id for upstream
+    for row_dict in row_dicts:
+        model_id = row_dict.get("model_id")
         if model_id == model_name:
             return {**row_dict, "effective_model_id": model_id}
+
+    # Priority 3: Wildcard model_id match - use requested model name for upstream
+    for row_dict in row_dicts:
+        model_id = row_dict.get("model_id")
+        if model_id and _regex_match(model_id, model_name):
+            return {**row_dict, "effective_model_id": model_name}
 
     return None
 
