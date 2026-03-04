@@ -43,6 +43,7 @@ export default function Logs() {
   const [error, setError] = useState<string | null>(null)
   const [expandedLogId, setExpandedLogId] = useState<number | null>(null)
   const [logDetail, setLogDetail] = useState<LogEntry | null>(null)
+  const [requestView, setRequestView] = useState<"pretty" | "raw">("pretty")
   const [responseView, setResponseView] = useState<"pretty" | "raw">("pretty")
   const [statusFilter, setStatusFilter] = useState("all")
   const [page, setPage] = useState(1)
@@ -106,9 +107,9 @@ export default function Logs() {
     }
     try {
       const parsed = JSON.parse(trimmed)
-      return JSON.stringify(parsed, null, 2)
+      return JSON.stringify(parsed, null, 2).replace(/\\n/g, "\n")
     } catch {
-      return value
+      return value.replace(/\\n/g, "\n")
     }
   }
 
@@ -147,6 +148,7 @@ export default function Logs() {
 
   useEffect(() => {
     if (expandedLogId) {
+      setRequestView("pretty")
       setResponseView("pretty")
     }
   }, [expandedLogId])
@@ -172,7 +174,11 @@ export default function Logs() {
       return
     }
     if (logDetail && logDetail.id === expandedLogId) {
-      setDisplayedRequestBody(formatBody(logDetail.request_body))
+      const requestValue =
+        requestView === "raw"
+          ? logDetail.request_body ?? "—"
+          : formatBody(logDetail.request_body)
+      setDisplayedRequestBody(requestValue)
       const responseValue =
         responseView === "raw"
           ? logDetail.response_body ?? "—"
@@ -189,7 +195,11 @@ export default function Logs() {
     const hasResponseBody =
       selectedLog.response_body != null && selectedLog.response_body.trim().length > 0
     if (hasRequestBody) {
-      setDisplayedRequestBody(formatBody(selectedLog.request_body))
+      const requestValue =
+        requestView === "raw"
+          ? selectedLog.request_body ?? "—"
+          : formatBody(selectedLog.request_body)
+      setDisplayedRequestBody(requestValue)
     }
     if (hasResponseBody) {
       const responseValue =
@@ -198,7 +208,7 @@ export default function Logs() {
           : formatBody(selectedLog.response_body)
       setDisplayedResponseBody(responseValue)
     }
-  }, [expandedLogId, logDetail, responseView, selectedLog])
+  }, [expandedLogId, logDetail, requestView, responseView, selectedLog])
 
   const responseBody = displayedResponseBody
   const requestBody = displayedRequestBody
@@ -480,8 +490,26 @@ export default function Logs() {
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto p-5">
               <div>
-                <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-                  Request
+                <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase text-muted-foreground">
+                  <span>Request</span>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant={requestView === "pretty" ? "secondary" : "ghost"}
+                      size="sm"
+                      className="normal-case"
+                      onClick={() => setRequestView("pretty")}
+                    >
+                      Pretty
+                    </Button>
+                    <Button
+                      variant={requestView === "raw" ? "secondary" : "ghost"}
+                      size="sm"
+                      className="normal-case"
+                      onClick={() => setRequestView("raw")}
+                    >
+                      Raw
+                    </Button>
+                  </div>
                 </div>
                 <div className="relative">
                   <Button
