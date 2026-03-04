@@ -97,6 +97,16 @@ export default function Logs() {
     )}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
   }
 
+  const unescapeForDisplay = (text: string) =>
+    text
+      .replace(/\\r\\n/g, "\n")
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\r/g, "")
+      .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+        String.fromCharCode(Number.parseInt(hex, 16))
+      )
+
   const formatBody = (value?: string | null) => {
     if (!value) {
       return "—"
@@ -106,10 +116,19 @@ export default function Logs() {
       return "—"
     }
     try {
-      const parsed = JSON.parse(trimmed)
-      return JSON.stringify(parsed, null, 2).replace(/\\n/g, "\n")
+      let parsed = JSON.parse(trimmed)
+      // Handle double-encoded JSON strings
+      if (typeof parsed === "string") {
+        try {
+          parsed = JSON.parse(parsed)
+        } catch {
+          // Not double-encoded, return the inner string unescaped
+          return unescapeForDisplay(parsed)
+        }
+      }
+      return unescapeForDisplay(JSON.stringify(parsed, null, 2))
     } catch {
-      return value.replace(/\\n/g, "\n")
+      return unescapeForDisplay(value)
     }
   }
 
